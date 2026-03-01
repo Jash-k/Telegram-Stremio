@@ -24,33 +24,24 @@ GENRES = [
 ]
 
 
-def format_released_date(media):
-    year = media.get("release_year")
-    if year:
-        try:
-            return datetime(int(year), 1, 1).isoformat() + "Z"
-        except:
-            return None
-
-    return None
-
 # --- Helper Functions ---
 def convert_to_stremio_meta(item: dict) -> dict:
     media_type = "series" if item.get("media_type") == "tv" else "movie"
+    stremio_id = f"{item.get('tmdb_id')}-{item.get('db_index')}"
     
     meta = {
-        "id": item.get('imdb_id'),
+        "id": stremio_id,
         "type": media_type,
         "name": item.get("title"),
         "poster": item.get("poster") or "",
         "logo": item.get("logo") or "",
         "year": item.get("release_year"),
-        "releaseInfo": str(item.get("release_year", "")),
+        "releaseInfo": item.get("release_year"),
         "imdb_id": item.get("imdb_id", ""),
         "moviedb_id": item.get("tmdb_id", ""),
         "background": item.get("backdrop") or "",
         "genres": item.get("genres") or [],
-        "imdbRating": str(item.get("rating") or ""),
+        "imdbRating": item.get("rating") or "",
         "description": item.get("description") or "",
         "cast": item.get("cast") or [],
         "runtime": item.get("runtime") or "",
@@ -105,15 +96,19 @@ def get_resolution_priority(stream_name: str) -> int:
             return res_value
     return 1
 
+
 # --- Routes ---
 @router.get("/manifest.json")
 async def get_manifest():
-    if Telegram.HIDE_CATALOG:
-        resources = ["stream"]
-        catalogs = []
-    else:
-        resources = ["catalog", "meta", "stream"]
-        catalogs = [
+    return {
+        "id": "telegram.media",
+        "version": ADDON_VERSION,
+        "name": ADDON_NAME,
+        "logo": "https://i.postimg.cc/XqWnmDXr/Picsart-25-10-09-08-09-45-867.png",
+        "description": "Streams movies and series from your Telegram.",
+        "types": ["movie", "series"],
+        "resources": ["catalog", "meta", "stream"],
+        "catalogs": [
             {
                 "type": "movie",
                 "id": "latest_movies",
@@ -156,18 +151,8 @@ async def get_manifest():
                 ],
                 "extraSupported": ["genre", "skip", "search"]
             }
-        ]
-
-    return {
-        "id": "telegram.media",
-        "version": ADDON_VERSION,
-        "name": ADDON_NAME,
-        "logo": "https://i.postimg.cc/XqWnmDXr/Picsart-25-10-09-08-09-45-867.png",
-        "description": "Streams movies and series from your Telegram.",
-        "types": ["movie", "series"],
-        "resources": resources,
-        "catalogs": catalogs,
-        "idPrefixes": ["tt"],
+        ],
+        "idPrefixes": [""],
         "behaviorHints": {
             "configurable": False,
             "configurationRequired": False
@@ -178,9 +163,6 @@ async def get_manifest():
 @router.get("/catalog/{media_type}/{id}/{extra:path}.json")
 @router.get("/catalog/{media_type}/{id}.json")
 async def get_catalog(media_type: str, id: str, extra: Optional[str] = None):
-    if Telegram.HIDE_CATALOG:
-        raise HTTPException(status_code=404, detail="Catalog disabled")
-    
     if media_type not in ["movie", "series"]:
         raise HTTPException(status_code=404, detail="Invalid catalog type")
 
@@ -232,14 +214,13 @@ async def get_catalog(media_type: str, id: str, extra: Optional[str] = None):
 
 @router.get("/meta/{media_type}/{id}.json")
 async def get_meta(media_type: str, id: str):
-    if Telegram.HIDE_CATALOG:
-        raise HTTPException(status_code=404, detail="Meta disabled")
     try:
-        imdb_id = id
+        tmdb_id_str, db_index_str = id.split("-")
+        tmdb_id, db_index = int(tmdb_id_str), int(db_index_str)
     except (ValueError, IndexError):
         raise HTTPException(status_code=400, detail="Invalid Stremio ID format")
 
-    media = await db.get_media_details(imdb_id=imdb_id)
+    media = await db.get_media_details(tmdb_id=tmdb_id, db_index=db_index)
     if not media:
         return {"meta": {}}
 
@@ -255,16 +236,12 @@ async def get_meta(media_type: str, id: str):
         "logo": media.get("logo", ""),
         "background": media.get("backdrop", ""),
         "imdb_id": media.get("imdb_id", ""),
-        "releaseInfo": str(media.get("release_year", "")),
+        "releaseInfo": media.get("release_year"),
         "moviedb_id": media.get("tmdb_id", ""),
         "cast": media.get("cast") or [],
         "runtime": media.get("runtime") or "",
-    }
 
-    if media.get("media_type") == "movie":
-        released_date = format_released_date(media)
-        if released_date:
-            meta_obj["released"] = released_date
+    }
 
     # --- Add Episodes ---
     if media_type == "series" and "seasons" in media:
@@ -292,19 +269,23 @@ async def get_meta(media_type: str, id: str):
         meta_obj["videos"] = videos
     return {"meta": meta_obj}
 
+
 @router.get("/stream/{media_type}/{id}.json")
 async def get_streams(media_type: str, id: str):
     try:
         parts = id.split(":")
-        imdb_id = parts[0]
+        base_id = parts[0]
         season_num = int(parts[1]) if len(parts) > 1 else None
         episode_num = int(parts[2]) if len(parts) > 2 else None
+        tmdb_id_str, db_index_str = base_id.split("-")
+        tmdb_id, db_index = int(tmdb_id_str), int(db_index_str)
 
     except (ValueError, IndexError):
         raise HTTPException(status_code=400, detail="Invalid Stremio ID format")
 
     media_details = await db.get_media_details(
-        imdb_id=imdb_id,
+        tmdb_id=tmdb_id,
+        db_index=db_index,
         season_number=season_num,
         episode_number=episode_num
     )
