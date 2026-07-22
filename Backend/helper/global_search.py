@@ -152,7 +152,7 @@ async def _search_channel(
     client,
     chat_id: int,
     chat_title: str,
-    search_query: str,
+    search_queries: List[str],
     expected_title: str,
     season: Optional[int],
     episode: Optional[int],
@@ -161,66 +161,67 @@ async def _search_channel(
     results: List[Dict] = []
     seen_msg_ids: set = set()
 
-    for msg_filter in (enums.MessagesFilter.VIDEO, enums.MessagesFilter.DOCUMENT):
-        if len(results) >= MAX_RESULTS_PER_CHAT:
-            break
-        try:
-            async for message in client.search_messages(
-                chat_id=chat_id,
-                query=search_query,
-                filter=msg_filter,
-                limit=MAX_RESULTS_PER_CHAT,
-            ):
-                if message.id in seen_msg_ids:
-                    continue
-                seen_msg_ids.add(message.id)
+    for search_query in search_queries:
+        for msg_filter in (enums.MessagesFilter.VIDEO, enums.MessagesFilter.DOCUMENT):
+            if len(results) >= MAX_RESULTS_PER_CHAT:
+                break
+            try:
+                async for message in client.search_messages(
+                    chat_id=chat_id,
+                    query=search_query,
+                    filter=msg_filter,
+                    limit=MAX_RESULTS_PER_CHAT,
+                ):
+                    if message.id in seen_msg_ids:
+                        continue
+                    seen_msg_ids.add(message.id)
 
-                filename = _video_filename(message)
-                if not filename:
-                    continue
+                    filename = _video_filename(message)
+                    if not filename:
+                        continue
 
-                parsed = _parse_and_validate(filename, expected_title, season, episode)
-                if parsed is None:
-                    continue
+                    parsed = _parse_and_validate(filename, expected_title, season, episode)
+                    if parsed is None:
+                        continue
 
-                media = message.video or message.document
-                size = get_readable_file_size(getattr(media, "file_size", 0) or 0)
-                quality = parsed.get("resolution") or "HD"
+                    media = message.video or message.document
+                    size = get_readable_file_size(getattr(media, "file_size", 0) or 0)
+                    quality = parsed.get("resolution") or "HD"
 
-                token = await encode_string({
-                    "global": True,
-                    "chat_id": chat_id,
-                    "msg_id": message.id,
-                    "title": filename,
-                    "size": size,
-                    "quality": quality,
-                    "source": chat_title,
-                })
+                    token = await encode_string({
+                        "global": True,
+                        "chat_id": chat_id,
+                        "msg_id": message.id,
+                        "title": filename,
+                        "size": size,
+                        "quality": quality,
+                        "source": chat_title,
+                    })
 
-                results.append({
-                    "token": token,
-                    "title": filename,
-                    "size": size,
-                    "source_chat": chat_title,
-                    "quality": quality,
-                })
-                LOGGER.debug(f"[GLOBAL SEARCH] Result found: {filename} in {chat_title}")
+                    results.append({
+                        "token": token,
+                        "title": filename,
+                        "size": size,
+                        "source_chat": chat_title,
+                        "quality": quality,
+                    })
+                    LOGGER.debug(f"[GLOBAL SEARCH] Result found: {filename} in {chat_title}")
 
-                if len(results) >= MAX_RESULTS_PER_CHAT:
-                    break
+                    if len(results) >= MAX_RESULTS_PER_CHAT:
+                        break
 
-        except FloodWait as e:
-            LOGGER.warning(f"[USERBOT] FloodWait for {chat_title}: sleeping {e.value}s")
-            await asyncio.sleep(e.value)
-        except (ChatAdminRequired, ChannelPrivate, PeerIdInvalid, UserNotParticipant) as e:
-            LOGGER.warning(f"[USERBOT] Cannot access channel {chat_title}: {type(e).__name__}")
-            break
-        except (AuthKeyUnregistered, SessionRevoked) as e:
-            LOGGER.error(f"[USERBOT] Session invalid ({type(e).__name__}): {e}")
-            _userbot_session_dead = True
-            break
-        except RPCError as e:
-            LOGGER.warning(f"[USERBOT] RPC error in {chat_title} ({msg_filter}): {e}")
+            except FloodWait as e:
+                LOGGER.warning(f"[USERBOT] FloodWait for {chat_title}: sleeping {e.value}s")
+                await asyncio.sleep(e.value)
+            except (ChatAdminRequired, ChannelPrivate, PeerIdInvalid, UserNotParticipant) as e:
+                LOGGER.warning(f"[USERBOT] Cannot access channel {chat_title}: {type(e).__name__}")
+                break
+            except (AuthKeyUnregistered, SessionRevoked) as e:
+                LOGGER.error(f"[USERBOT] Session invalid ({type(e).__name__}): {e}")
+                _userbot_session_dead = True
+                break
+            except RPCError as e:
+                LOGGER.warning(f"[USERBOT] RPC error in {chat_title} ({msg_filter}): {e}")
 
     return results
 
@@ -243,19 +244,25 @@ async def global_search(
         return []
 
     if season is not None and episode is not None:
-        search_query = f"{expected_title} S{int(season):02d}"
+        search_queries = [
+            f"{expected_title} S{int(season):02d}E{int(episode):02d}",
+            f"{expected_title} S{int(season):02d}"
+        ]
+        log_query = f"{expected_title} S{int(season):02d}E{int(episode):02d}"
     elif year is not None:
-        search_query = f"{expected_title} {year}"
+        search_queries = [f"{expected_title} {year}"]
+        log_query = search_queries[0]
     else:
-        search_query = expected_title
+        search_queries = [expected_title]
+        log_query = search_queries[0]
 
-    key = search_query.lower()
+    key = log_query.lower()
     now = time.time()
     if now - _last_search_ts.get(key, 0) < SEARCH_COOLDOWN_SECONDS:
-        LOGGER.info(f"[GLOBAL SEARCH] Cooldown active for '{search_query}'")
+        LOGGER.info(f"[GLOBAL SEARCH] Cooldown active for '{log_query}'")
         return []
     if key in _inflight_queries:
-        LOGGER.info(f"[GLOBAL SEARCH] Duplicate in-flight for '{search_query}'")
+        LOGGER.info(f"[GLOBAL SEARCH] Duplicate in-flight for '{log_query}'")
         return []
 
     _inflight_queries.add(key)
@@ -263,7 +270,7 @@ async def global_search(
 
     try:
         async with _search_semaphore:
-            LOGGER.info(f"[USERBOT] Search started: '{search_query}' across {len(target_ids)} channel(s)")
+            LOGGER.info(f"[USERBOT] Search started: '{log_query}' across {len(target_ids)} channel(s)")
             chat_titles = await asyncio.gather(
                 *(_get_chat_title(Userbot, cid) for cid in target_ids),
                 return_exceptions=True,
@@ -276,7 +283,7 @@ async def global_search(
                 if isinstance(title, Exception):
                     title = str(cid)
                 search_tasks.append(
-                    _search_channel(Userbot, cid, title, search_query, expected_title, season, episode)
+                    _search_channel(Userbot, cid, title, search_queries, expected_title, season, episode)
                 )
 
             per_channel_results = await asyncio.gather(*search_tasks, return_exceptions=True)
@@ -287,7 +294,7 @@ async def global_search(
                     all_results.extend(r)
             all_results = all_results[:MAX_RESULTS]
 
-            LOGGER.info(f"[USERBOT] Search completed: '{search_query}' -> {len(all_results)} result(s)")
+            LOGGER.info(f"[USERBOT] Search completed: '{log_query}' -> {len(all_results)} result(s)")
             return all_results
     finally:
         _inflight_queries.discard(key)
