@@ -39,7 +39,7 @@ _COMBINED_EPISODES_RE = re.compile(
     re.IGNORECASE,
 )
 _COMBINED_SEASON_RE = re.compile(r"S(?:EASON)?[\s._-]*0*(\d{1,3})", re.IGNORECASE)
-_COMBINED_KEYWORD_RE = re.compile(r"\bcombined\b", re.IGNORECASE)
+_COMBINED_KEYWORD_RE = re.compile(r"\b(?:combined|complete|batch)\b", re.IGNORECASE)
 
 
 #----- Extract a season number from a combined-episode filename
