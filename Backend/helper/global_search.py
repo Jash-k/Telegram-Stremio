@@ -243,17 +243,19 @@ async def global_search(
     if not target_ids:
         return []
 
+    clean_title = re.sub(r'[^\w\s]', '', expected_title)
+
     if season is not None and episode is not None:
         search_queries = [
-            f"{expected_title} S{int(season):02d}E{int(episode):02d}",
-            f"{expected_title} S{int(season):02d}"
+            f"{clean_title} S{int(season):02d}E{int(episode):02d}",
+            f"{clean_title} S{int(season):02d}"
         ]
         log_query = f"{expected_title} S{int(season):02d}E{int(episode):02d}"
     elif year is not None:
-        search_queries = [f"{expected_title} {year}"]
+        search_queries = [f"{clean_title} {year}"]
         log_query = search_queries[0]
     else:
-        search_queries = [expected_title]
+        search_queries = [clean_title]
         log_query = search_queries[0]
 
     key = log_query.lower()
