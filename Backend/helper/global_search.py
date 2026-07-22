@@ -60,6 +60,11 @@ def _title_score(result_title: str, expected_title: str) -> float:
     a, b = result_title.lower(), expected_title.lower()
     ratio = fuzz.ratio(a, b) / 100.0
     sort = fuzz.token_sort_ratio(a, b) / 100.0
+    
+    # If expected title is entirely inside the result title (e.g. uploader tags bypassed PTN)
+    if b in a:
+        return max(ratio, sort, 0.85)
+        
     return max(ratio, sort)
 
 
@@ -253,8 +258,8 @@ async def global_search(
             f"{clean_title} S{int(season):02d}"
         ]
         log_query = f"{expected_title} S{int(season):02d}E{int(episode):02d}"
-    elif year is not None:
-        search_queries = [f"{clean_title} {year}"]
+      elif year is not None:
+        search_queries = [f"{clean_title} {year}", clean_title] # <--- ADD clean_title HERE
         log_query = search_queries[0]
     else:
         search_queries = [clean_title]
