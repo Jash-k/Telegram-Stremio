@@ -568,7 +568,9 @@ async def get_subtitles(token: str, media_type: str, id: str, extra: Optional[st
 
 #----- Collect Global Search streams for a title/episode via IMDb lookup
 async def _global_streams_for(token: str, imdb_id: str, media_type: str, season_num: int | None, episode_num: int | None) -> list[dict]:
-    imdb_media_type = "tvSeries" if media_type == "tv" else "movie"
+    
+    # Change "tv" back to "series" on the line below!
+    imdb_media_type = "tvSeries" if media_type == "series" else "movie"
 
     detail = await get_detail(imdb_id=imdb_id, media_type=imdb_media_type)
     if not detail or not detail.get("title"):
