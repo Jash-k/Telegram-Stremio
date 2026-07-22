@@ -28,7 +28,7 @@ MAX_RESULTS = 50
 MAX_RESULTS_PER_CHAT = 50
 SEARCH_COOLDOWN_SECONDS = 5
 MAX_CONCURRENT_SEARCHES = 3
-MIN_TITLE_SCORE = 0.6
+MIN_TITLE_SCORE = 0.75
 
 _last_search_ts: Dict[str, float] = {}
 _inflight_queries: set = set()
@@ -52,13 +52,15 @@ def is_global_search_enabled() -> bool:
     return bool(s.global_search and s.global_search_channels)
 
 
-def _tokens(s: str) -> set:
-    return set(_TOKEN_RE.findall((s or "").lower()))
-
+from rapidfuzz import fuzz
 
 def _title_score(result_title: str, expected_title: str) -> float:
-    expected = _tokens(expected_title)
-    return len(expected & _tokens(result_title)) / len(expected) if expected else 0.0
+    if not result_title or not expected_title:
+        return 0.0
+    a, b = result_title.lower(), expected_title.lower()
+    ratio = fuzz.ratio(a, b) / 100.0
+    sort = fuzz.token_sort_ratio(a, b) / 100.0
+    return max(ratio, sort)
 
 
 def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode: Optional[int]) -> bool:
