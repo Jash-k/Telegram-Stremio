@@ -22,6 +22,8 @@ from Backend.helper.encrypt import encode_string
 from Backend.helper.pyro import get_readable_file_size
 from Backend.pyrofork.bot import Userbot
 
+from Backend.helper.split_files import parse_combined_episodes
+
 MAX_RESULTS = 50
 MAX_RESULTS_PER_CHAT = 50
 SEARCH_COOLDOWN_SECONDS = 5
@@ -59,7 +61,21 @@ def _title_score(result_title: str, expected_title: str) -> float:
     return len(expected & _tokens(result_title)) / len(expected) if expected else 0.0
 
 
-def _matches_episode(parsed: dict, season: Optional[int], episode: Optional[int]) -> bool:
+def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode: Optional[int]) -> bool:
+    if season is None and episode is None:
+        return True
+
+    combined = parse_combined_episodes(filename)
+    if combined and combined["season"] == season:
+        start = combined.get("start")
+        end = combined.get("end")
+        if start is None and end is None:
+            # Full season pack matches any episode
+            return True
+        if start is not None and end is not None and episode is not None:
+            if start <= episode <= end:
+                return True
+
     for value, parsed_key in ((season, "season"), (episode, "episode")):
         if value is None:
             continue
@@ -84,11 +100,7 @@ def _parse_and_validate(filename: str, expected_title: str, season: Optional[int
     except Exception:
         return None
 
-    if "excess" in parsed and any("combined" in item.lower() for item in parsed["excess"]):
-        LOGGER.info(f"Skipping {filename}: contains 'combined'")
-        return None
-
-    if not _matches_episode(parsed, season, episode):
+    if not _matches_episode(parsed, filename, season, episode):
         return None
     if _title_score(parsed.get("title", ""), expected_title) < MIN_TITLE_SCORE:
         return None
@@ -231,7 +243,7 @@ async def global_search(
         return []
 
     if season is not None and episode is not None:
-        search_query = f"{expected_title} S{int(season):02d}E{int(episode):02d}"
+        search_query = f"{expected_title} S{int(season):02d}"
     elif year is not None:
         search_query = f"{expected_title} {year}"
     else:

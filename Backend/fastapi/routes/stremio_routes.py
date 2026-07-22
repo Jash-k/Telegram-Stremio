@@ -599,6 +599,13 @@ async def _global_streams_for(token: str, imdb_id: str, media_type: str, season_
     for r in global_results:
         _, stream_title = format_stream_details(r["title"], r["quality"], r["size"], is_split=False)
         stream_name = f"🌐 GLOBAL {r['quality']}"
+        
+        combined = parse_combined_episodes(r["title"])
+        if combined:
+            label = "Full" if combined.get("start") is None else f"E{combined['start']:02d}-E{combined['end']:02d}"
+            if label.lower() not in stream_name.lower():
+                stream_name = f"{stream_name} {label}"
+
         stream_title = f"{stream_title}\n📡 {r['source_chat']}"
         url = f"{SettingsManager.current().base_url}/dl/{token}/{r['token']}/{quote(r['title'])}"
         size_bytes = parse_size_to_bytes(r.get("size", ""))
