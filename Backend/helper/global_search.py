@@ -79,6 +79,10 @@ def _title_score(result_title: str, expected_title: str) -> float:
 
 def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode: Optional[int]) -> bool:
     if season is None and episode is None:
+        # If we asked for a movie (no season/episode), but the file explicitly has an episode number, reject it!
+        # This prevents TV shows from showing up in Movie searches.
+        if parsed.get("episode") is not None or parsed.get("season") is not None:
+            return False
         return True
 
     from Backend.helper.split_files import parse_combined_episodes
@@ -103,12 +107,15 @@ def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode
         if m2 and int(m2.group(1)) == episode:
             return True
 
+    # Check PTN result
     for value, parsed_key in ((season, "season"), (episode, "episode")):
         if value is None:
             continue
         rv = parsed.get(parsed_key)
         if rv is None:
-            continue
+            # If we are looking for a specific season/episode and the parser found nothing,
+            # then it does not match (this blocks Movies from showing up in Series searches).
+            return False
         if isinstance(rv, list):
             if value not in rv:
                 return False
