@@ -53,7 +53,7 @@ def is_global_search_enabled() -> bool:
     return bool(s.global_search and s.global_search_channels)
 
 
-def _title_score(result_title: str, expected_title: str) -> float:
+def _title_score(result_title: str, expected_title: str, expected_year: Optional[int] = None) -> float:
     if not result_title or not expected_title:
         return 0.0
     a, b = result_title.lower(), expected_title.lower()
@@ -63,15 +63,30 @@ def _title_score(result_title: str, expected_title: str) -> float:
         
     da, db = get_digits(a), get_digits(b)
     
+    # If the file explicitly contains a year that differs from the expected year, reject it
+    if expected_year:
+        year_str = str(expected_year)
+        # Check if the result string has ANY 4-digit number that represents a year (19xx or 20xx)
+        years_in_result = set(re.findall(r'\b(19\d{2}|20\d{2})\b', a))
+        if years_in_result and year_str not in years_in_result:
+            # File explicitly has a different year (e.g. Youth 2015 vs Youth 2002)
+            return 0.0
+    
     ratio = fuzz.ratio(a, b) / 100.0
     sort = fuzz.token_sort_ratio(a, b) / 100.0
     score = max(ratio, sort)
     
-    if da != db:
+    # Check sequel digits, ignoring years!
+    years_a = set(re.findall(r'\b(19\d{2}|20\d{2})\b', a))
+    years_b = set(re.findall(r'\b(19\d{2}|20\d{2})\b', b))
+    da_clean = da - years_a
+    db_clean = db - years_b
+    
+    if da_clean != db_clean:
         score -= 0.30
         
     if b in a and score < 0.85:
-        if da == db:
+        if da_clean == db_clean:
             score = max(score, 0.85)
             
     return score
@@ -79,6 +94,8 @@ def _title_score(result_title: str, expected_title: str) -> float:
 
 def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode: Optional[int]) -> bool:
     if season is None and episode is None:
+        # If we asked for a movie (no season/episode), but the file explicitly has an episode number, reject it!
+        # This prevents TV shows from showing up in Movie searches.
         if parsed.get("episode") is not None or parsed.get("season") is not None:
             return False
         return True
@@ -105,11 +122,14 @@ def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode
         if m2 and int(m2.group(1)) == episode:
             return True
 
+    # Check PTN result
     for value, parsed_key in ((season, "season"), (episode, "episode")):
         if value is None:
             continue
         rv = parsed.get(parsed_key)
         if rv is None:
+            # If we are looking for a specific season/episode and the parser found nothing,
+            # then it does not match (this blocks Movies from showing up in Series searches).
             return False
         if isinstance(rv, list):
             if value not in rv:
@@ -120,7 +140,7 @@ def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode
     return True
 
 
-def _parse_and_validate(filename: str, expected_title: str, season: Optional[int], episode: Optional[int]) -> Optional[dict]:
+def _parse_and_validate(filename: str, expected_title: str, expected_year: Optional[int], season: Optional[int], episode: Optional[int]) -> Optional[dict]:
     try:
         parsed = PTN.parse(filename)
     except Exception:
@@ -128,7 +148,7 @@ def _parse_and_validate(filename: str, expected_title: str, season: Optional[int
 
     if not _matches_episode(parsed, filename, season, episode):
         return None
-    if _title_score(parsed.get("title", ""), expected_title) < MIN_TITLE_SCORE:
+    if _title_score(parsed.get("title", ""), expected_title, expected_year) < MIN_TITLE_SCORE:
         return None
     return parsed
 
@@ -180,6 +200,7 @@ async def _search_channel(
     chat_title: str,
     search_queries: List[str],
     expected_title: str,
+    expected_year: Optional[int],
     season: Optional[int],
     episode: Optional[int],
 ) -> List[Dict]:
@@ -206,7 +227,7 @@ async def _search_channel(
                     if not filename:
                         continue
 
-                    parsed = _parse_and_validate(filename, expected_title, season, episode)
+                    parsed = _parse_and_validate(filename, expected_title, expected_year, season, episode)
                     if parsed is None:
                         continue
 
@@ -317,7 +338,7 @@ async def global_search(
                 if isinstance(title, Exception):
                     title = str(cid)
                 search_tasks.append(
-                    asyncio.create_task(_search_channel(Userbot, cid, title, search_queries, expected_title, season, episode))
+                    asyncio.create_task(_search_channel(Userbot, cid, title, search_queries, expected_title, year, season, episode))
                 )
 
             all_results: List[Dict] = []
