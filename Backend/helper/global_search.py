@@ -23,6 +23,7 @@ from Backend.helper.pyro import get_readable_file_size
 from Backend.pyrofork.bot import Userbot
 
 from Backend.helper.split_files import parse_combined_episodes
+from rapidfuzz import fuzz
 
 MAX_RESULTS = 50
 MAX_RESULTS_PER_CHAT = 50
@@ -52,8 +53,6 @@ def is_global_search_enabled() -> bool:
     return bool(s.global_search and s.global_search_channels)
 
 
-from rapidfuzz import fuzz
-
 def _title_score(result_title: str, expected_title: str) -> float:
     if not result_title or not expected_title:
         return 0.0
@@ -68,11 +67,9 @@ def _title_score(result_title: str, expected_title: str) -> float:
     sort = fuzz.token_sort_ratio(a, b) / 100.0
     score = max(ratio, sort)
     
-    # Punish the score if standalone digits (like sequel numbers) do not match
     if da != db:
         score -= 0.30
         
-    # Boost score if expected title is fully within the result title (e.g., uploader prefix tags)
     if b in a and score < 0.85:
         if da == db:
             score = max(score, 0.85)
@@ -84,16 +81,27 @@ def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode
     if season is None and episode is None:
         return True
 
+    from Backend.helper.split_files import parse_combined_episodes
     combined = parse_combined_episodes(filename)
+    
     if combined and combined["season"] == season:
         start = combined.get("start")
         end = combined.get("end")
         if start is None and end is None:
-            # Full season pack matches any episode
             return True
         if start is not None and end is not None and episode is not None:
             if start <= episode <= end:
                 return True
+            else:
+                return False
+
+    if episode is not None:
+        m = re.search(r"S\d{1,2}E(\d{1,3})", filename, re.IGNORECASE)
+        m2 = re.search(r"EP(?:ISODE)?[\s._\-\[\(\{]*(\d{1,3})", filename, re.IGNORECASE)
+        if m and int(m.group(1)) == episode:
+            return True
+        if m2 and int(m2.group(1)) == episode:
+            return True
 
     for value, parsed_key in ((season, "season"), (episode, "episode")):
         if value is None:
@@ -106,14 +114,11 @@ def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode
                 return False
         elif int(rv) != int(value):
             return False
+            
     return True
 
 
 def _parse_and_validate(filename: str, expected_title: str, season: Optional[int], episode: Optional[int]) -> Optional[dict]:
-    if _MULTIPART_RE.search(filename):
-        LOGGER.info(f"Skipping {filename}: seems to be a split video file")
-        return None
-
     try:
         parsed = PTN.parse(filename)
     except Exception:
@@ -267,11 +272,13 @@ async def global_search(
     if season is not None and episode is not None:
         search_queries = [
             f"{clean_title} S{int(season):02d}E{int(episode):02d}",
-            f"{clean_title} S{int(season):02d}"
+            f"{clean_title} S{int(season):02d}",
+            f"{clean_title} E{int(episode):02d}",
+            clean_title
         ]
         log_query = f"{expected_title} S{int(season):02d}E{int(episode):02d}"
     elif year is not None:
-        search_queries = [f"{clean_title} {year}", clean_title] # <--- ADD clean_title HERE
+        search_queries = [f"{clean_title} {year}", clean_title]
         log_query = search_queries[0]
     else:
         search_queries = [clean_title]
