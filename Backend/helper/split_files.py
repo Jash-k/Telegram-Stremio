@@ -35,7 +35,7 @@ def parse_split_info(filename: str) -> Optional[Tuple[str, int]]:
 
 
 _COMBINED_EPISODES_RE = re.compile(
-    r"E(?:P|PISODE)?[\s._-]*0*(\d{1,4})[\s._-]*(?:-|–|~|\+|&|,|to)+[\s._-]*(?:E(?:P|PISODE)?[\s._-]*)?0*(\d{1,4})(?=\D|$)",
+    r"E(?:P|PISODE)?[\s._\-\(\[\{]*0*(\d{1,4})[\s._\-\(\)\]\}]*(?:-|–|~|\+|&|,|to)+[\s._\-\(\)\]\}]*(?:E(?:P|PISODE)?[\s._\-\(\)\]\}]*)?0*(\d{1,4})[\s._\-\}\]\)]*(?=\D|$)",
     re.IGNORECASE,
 )
 _COMBINED_SEASON_RE = re.compile(r"S(?:EASON)?[\s._-]*0*(\d{1,3})", re.IGNORECASE)

@@ -58,14 +58,26 @@ def _title_score(result_title: str, expected_title: str) -> float:
     if not result_title or not expected_title:
         return 0.0
     a, b = result_title.lower(), expected_title.lower()
+    
+    def get_digits(s):
+        return set(re.findall(r'\b\d+\b', s))
+        
+    da, db = get_digits(a), get_digits(b)
+    
     ratio = fuzz.ratio(a, b) / 100.0
     sort = fuzz.token_sort_ratio(a, b) / 100.0
+    score = max(ratio, sort)
     
-    # If expected title is entirely inside the result title (e.g. uploader tags bypassed PTN)
-    if b in a:
-        return max(ratio, sort, 0.85)
+    # Punish the score if standalone digits (like sequel numbers) do not match
+    if da != db:
+        score -= 0.30
         
-    return max(ratio, sort)
+    # Boost score if expected title is fully within the result title (e.g., uploader prefix tags)
+    if b in a and score < 0.85:
+        if da == db:
+            score = max(score, 0.85)
+            
+    return score
 
 
 def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode: Optional[int]) -> bool:
