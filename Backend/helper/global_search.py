@@ -25,8 +25,8 @@ from Backend.pyrofork.bot import Userbot
 from Backend.helper.split_files import parse_combined_episodes
 from rapidfuzz import fuzz
 
-MAX_RESULTS = 50
-MAX_RESULTS_PER_CHAT = 50
+MAX_RESULTS = 25
+MAX_RESULTS_PER_CHAT = 15
 SEARCH_COOLDOWN_SECONDS = 5
 MAX_CONCURRENT_SEARCHES = 3
 MIN_TITLE_SCORE = 0.75
@@ -79,8 +79,6 @@ def _title_score(result_title: str, expected_title: str) -> float:
 
 def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode: Optional[int]) -> bool:
     if season is None and episode is None:
-        # If we asked for a movie (no season/episode), but the file explicitly has an episode number, reject it!
-        # This prevents TV shows from showing up in Movie searches.
         if parsed.get("episode") is not None or parsed.get("season") is not None:
             return False
         return True
@@ -107,14 +105,11 @@ def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode
         if m2 and int(m2.group(1)) == episode:
             return True
 
-    # Check PTN result
     for value, parsed_key in ((season, "season"), (episode, "episode")):
         if value is None:
             continue
         rv = parsed.get(parsed_key)
         if rv is None:
-            # If we are looking for a specific season/episode and the parser found nothing,
-            # then it does not match (this blocks Movies from showing up in Series searches).
             return False
         if isinstance(rv, list):
             if value not in rv:
@@ -253,6 +248,10 @@ async def _search_channel(
                 break
             except RPCError as e:
                 LOGGER.warning(f"[USERBOT] RPC error in {chat_title} ({msg_filter}): {e}")
+        
+        # If this query found results, skip running the fallback queries for this channel to save time!
+        if len(results) > 0:
+            break
 
     return results
 
@@ -318,15 +317,27 @@ async def global_search(
                 if isinstance(title, Exception):
                     title = str(cid)
                 search_tasks.append(
-                    _search_channel(Userbot, cid, title, search_queries, expected_title, season, episode)
+                    asyncio.create_task(_search_channel(Userbot, cid, title, search_queries, expected_title, season, episode))
                 )
 
-            per_channel_results = await asyncio.gather(*search_tasks, return_exceptions=True)
-
             all_results: List[Dict] = []
-            for r in per_channel_results:
-                if isinstance(r, list):
-                    all_results.extend(r)
+            for coro in asyncio.as_completed(search_tasks):
+                try:
+                    r = await coro
+                    if isinstance(r, list):
+                        all_results.extend(r)
+                        
+                    # Early Break! If we found 20 streams, cancel the rest of the channel searches instantly!
+                    if len(all_results) >= 20:
+                        break
+                except Exception as e:
+                    LOGGER.warning(f"[GLOBAL SEARCH] Channel search error: {e}")
+
+            # Cancel remaining tasks to save memory and network bandwidth
+            for task in search_tasks:
+                if not task.done():
+                    task.cancel()
+
             all_results = all_results[:MAX_RESULTS]
 
             LOGGER.info(f"[USERBOT] Search completed: '{log_query}' -> {len(all_results)} result(s)")

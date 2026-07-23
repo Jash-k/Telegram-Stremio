@@ -271,6 +271,15 @@ def get_resolution_priority(stream_name: str) -> int:
             return res_value
     return 1
 
+# >>> ADD THIS NEW FUNCTION <<<
+def get_language_priority(stream_title: str) -> int:
+    title_lower = stream_title.lower()
+    if re.search(r'\b(tamil|tam)\b', title_lower):
+        return 3
+    if re.search(r'\bmulti\b', title_lower):
+        return 2
+    return 1
+
 
 #----- Manifest describing the addon's catalogs/resources for this token
 @router.get("/{token}/manifest.json")
@@ -772,9 +781,14 @@ async def get_streams(
         streams.sort(key=lambda s: s.get("episode_start", 0))
         streams.sort(key=lambda s: s.get("name_key", ""))
         streams.sort(key=lambda s: get_resolution_priority(s.get("name", "")), reverse=True)
+        streams.sort(key=lambda s: get_language_priority(s.get("title", "")), reverse=True)
     else:
         streams.sort(
-            key=lambda s: (get_resolution_priority(s.get("name", "")), s.get("size_bytes", 0)),
+            key=lambda s: (
+                get_language_priority(s.get("title", "")),
+                get_resolution_priority(s.get("name", "")),
+                s.get("size_bytes", 0)
+            ),
             reverse=True
         )
     name_count: dict = {}
