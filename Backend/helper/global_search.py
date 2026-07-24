@@ -53,7 +53,7 @@ def is_global_search_enabled() -> bool:
     return bool(s.global_search and s.global_search_channels)
 
 
-def _title_score(result_title: str, expected_title: str, expected_year: Optional[int] = None) -> float:
+def _title_score(result_title: str, expected_title: str, expected_year: Optional[int] = None, raw_filename: str = "") -> float:
     if not result_title or not expected_title:
         return 0.0
     a, b = result_title.lower(), expected_title.lower()
@@ -63,20 +63,26 @@ def _title_score(result_title: str, expected_title: str, expected_year: Optional
         
     da, db = get_digits(a), get_digits(b)
     
-    # If the file explicitly contains a year that differs from the expected year, reject it
+    # If the file explicitly contains a year that differs from the expected year, reject it.
     if expected_year:
         year_str = str(expected_year)
-        # Check if the result string has ANY 4-digit number that represents a year (19xx or 20xx)
-        years_in_result = set(re.findall(r'\b(19\d{2}|20\d{2})\b', a))
+        years_in_result = set(re.findall(r'\b(19\d{2}|20\d{2})\b', raw_filename))
         if years_in_result and year_str not in years_in_result:
-            # File explicitly has a different year (e.g. Youth 2015 vs Youth 2002)
             return 0.0
     
-    ratio = fuzz.ratio(a, b) / 100.0
-    sort = fuzz.token_sort_ratio(a, b) / 100.0
-    score = max(ratio, sort)
+    # Pre-process strings to handle bracket tags common in Telegram uploads
+    a_clean = re.sub(r'^[\[\(\{\<].*?[\]\)\}\>]\s*', '', a)
+    a_clean = re.split(r' \- | ~ ', a_clean)[0].strip()
     
-    # Check sequel digits, ignoring years!
+    ratio = fuzz.ratio(a_clean, b) / 100.0
+    sort = fuzz.token_sort_ratio(a_clean, b) / 100.0
+    
+    a_no_space = re.sub(r'[\W_]+', '', a_clean)
+    b_no_space = re.sub(r'[\W_]+', '', b)
+    no_space_ratio = fuzz.ratio(a_no_space, b_no_space) / 100.0
+    
+    score = max(ratio, sort, no_space_ratio)
+    
     years_a = set(re.findall(r'\b(19\d{2}|20\d{2})\b', a))
     years_b = set(re.findall(r'\b(19\d{2}|20\d{2})\b', b))
     da_clean = da - years_a
@@ -94,8 +100,6 @@ def _title_score(result_title: str, expected_title: str, expected_year: Optional
 
 def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode: Optional[int]) -> bool:
     if season is None and episode is None:
-        # If we asked for a movie (no season/episode), but the file explicitly has an episode number, reject it!
-        # This prevents TV shows from showing up in Movie searches.
         if parsed.get("episode") is not None or parsed.get("season") is not None:
             return False
         return True
@@ -122,14 +126,11 @@ def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode
         if m2 and int(m2.group(1)) == episode:
             return True
 
-    # Check PTN result
     for value, parsed_key in ((season, "season"), (episode, "episode")):
         if value is None:
             continue
         rv = parsed.get(parsed_key)
         if rv is None:
-            # If we are looking for a specific season/episode and the parser found nothing,
-            # then it does not match (this blocks Movies from showing up in Series searches).
             return False
         if isinstance(rv, list):
             if value not in rv:
@@ -148,8 +149,11 @@ def _parse_and_validate(filename: str, expected_title: str, expected_year: Optio
 
     if not _matches_episode(parsed, filename, season, episode):
         return None
-    if _title_score(parsed.get("title", ""), expected_title, expected_year) < MIN_TITLE_SCORE:
+        
+    score = _title_score(parsed.get("title", ""), expected_title, expected_year, raw_filename=filename)
+    if score < MIN_TITLE_SCORE:
         return None
+        
     return parsed
 
 
@@ -270,7 +274,6 @@ async def _search_channel(
             except RPCError as e:
                 LOGGER.warning(f"[USERBOT] RPC error in {chat_title} ({msg_filter}): {e}")
         
-        # If this query found results, skip running the fallback queries for this channel to save time!
         if len(results) > 0:
             break
 
@@ -295,6 +298,9 @@ async def global_search(
         return []
 
     clean_title = re.sub(r'[^\w\s]', '', expected_title)
+    
+    words = clean_title.split()
+    fallback_query = words[0] if words and len(words[0]) >= 4 else ""
 
     if season is not None and episode is not None:
         search_queries = [
@@ -303,12 +309,24 @@ async def global_search(
             f"{clean_title} E{int(episode):02d}",
             clean_title
         ]
+        if fallback_query:
+            search_queries.append(f"{fallback_query} S{int(season):02d}E{int(episode):02d}")
+            search_queries.append(f"{fallback_query} S{int(season):02d}")
         log_query = f"{expected_title} S{int(season):02d}E{int(episode):02d}"
     elif year is not None:
-        search_queries = [f"{clean_title} {year}", clean_title]
+        search_queries = [
+            f"{clean_title} {year}",
+            f"{clean_title} ({year})",
+            f"{clean_title}.{year}",
+            clean_title
+        ]
+        if fallback_query:
+            search_queries.append(f"{fallback_query} {year}")
         log_query = search_queries[0]
     else:
         search_queries = [clean_title]
+        if fallback_query:
+            search_queries.append(fallback_query)
         log_query = search_queries[0]
 
     key = log_query.lower()
@@ -348,13 +366,11 @@ async def global_search(
                     if isinstance(r, list):
                         all_results.extend(r)
                         
-                    # Early Break! If we found 20 streams, cancel the rest of the channel searches instantly!
                     if len(all_results) >= 20:
                         break
                 except Exception as e:
                     LOGGER.warning(f"[GLOBAL SEARCH] Channel search error: {e}")
 
-            # Cancel remaining tasks to save memory and network bandwidth
             for task in search_tasks:
                 if not task.done():
                     task.cancel()
