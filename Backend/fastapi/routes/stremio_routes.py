@@ -134,6 +134,7 @@ GENRES = [
 
 
 #----- Turn a stored image reference into an absolute URL for Stremio clients.
+#----- Rebinds gradient covers and app-served /thumb paths to the current hosts.
 def _abs_media_url(value: str) -> str:
     value = resolve_cover_url(value)
     idx = value.find("/thumb/")
@@ -176,6 +177,7 @@ async def _apply_fanart(meta: dict, item: dict) -> None:
         meta["background"] = art["background"]
 
 
+#----- Map an internal media item into a Stremio meta object
 def convert_to_stremio_meta(item: dict) -> dict:
     media_type = "series" if item.get("media_type") == "tv" else "movie"
 
@@ -199,6 +201,7 @@ def convert_to_stremio_meta(item: dict) -> dict:
     return meta
 
 
+#----- Format a movie release date as an ISO string, or None
 def format_released_date(media):
     year = media.get("release_year")
     if year:
@@ -209,6 +212,7 @@ def format_released_date(media):
     return None
 
 
+#----- Build a Stremio stream display name/title from a filename
 def format_stream_details(filename: str, quality: str, size: str, is_split: bool = False) -> tuple[str, str]:
     size_emoji = "📦" if is_split else "💾"
     try:
@@ -277,214 +281,227 @@ def get_language_priority(stream_title: str) -> int:
     return 1
 
 
+#----- Manifest describing the addon's catalogs/resources for this token
 @router.get("/{token}/manifest.json")
 async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
-    user_name = "Unknown"
-    is_premium = False
-
-    try:
-        user_id = token_data.get("user_id")
-        if user_id:
-            user = await db.get_user(int(user_id))
-            if user:
-                user_name = user.get("first_name") or user.get("username") or f"User {user_id}"
-                is_premium = user.get("subscription_status") == "active"
-    except Exception:
-        pass
-
-    subscription_badge = " 🌟" if is_premium else ""
-    full_name = f"{ADDON_NAME}{subscription_badge} ({user_name})"
-
-    manifest = {
-        "id": "org.telegram.stremio",
-        "version": ADDON_VERSION,
-        "name": full_name,
-        "description": "Stream movies and TV shows directly from your Telegram bot via Stremio.",
-        "types": ["movie", "series"],
-        "idPrefixes": ["tt", "tmdb"],
-        "resources": ["catalog", "stream", "meta", "subtitles"],
-        "catalogs": [],
-        "behaviorHints": {
-            "configurable": True,
-            "configurationRequired": False
-        }
-    }
-
-    vis_query = _visibility_query(token_data)
-    custom_catalogs = await db.get_custom_catalogs(query=vis_query)
-
-    for cat in custom_catalogs:
-        cat_id = f"tg_custom_{cat['_id']}"
-        cat_types = cat.get("media_types") or ["movie", "series"]
-        if "tv" in cat_types and "series" not in cat_types:
-            cat_types.append("series")
-            cat_types.remove("tv")
-
-        for mt in cat_types:
-            if mt not in ("movie", "series"):
-                continue
-            manifest["catalogs"].append({
-                "type": mt,
-                "id": cat_id,
-                "name": cat.get("name", "Custom Catalog"),
-                "extra": [
-                    {"name": "search", "isRequired": False},
-                    {"name": "skip", "isRequired": False}
-                ]
-            })
-
-    if SettingsManager.current().show_default_catalogs:
-        manifest["catalogs"].extend([
+    if SettingsManager.current().hide_catalog:
+        resources = ["stream", "subtitles"]
+        catalogs = []
+    else:
+        resources = ["catalog", "meta", "stream", "subtitles"]
+        catalogs = [
             {
                 "type": "movie",
-                "id": "tg_movies",
-                "name": f"{ADDON_NAME} Movies",
+                "id": "latest_movies",
+                "name": "Latest",
                 "extra": [
-                    {"name": "search", "isRequired": False},
                     {"name": "genre", "isRequired": False, "options": GENRES},
-                    {"name": "skip", "isRequired": False}
-                ]
+                    {"name": "skip"}
+                ],
+                "extraSupported": ["genre", "skip"]
+            },
+            {
+                "type": "movie",
+                "id": "top_movies",
+                "name": "Popular",
+                "extra": [
+                    {"name": "genre", "isRequired": False, "options": GENRES},
+                    {"name": "skip"},
+                    {"name": "search", "isRequired": False}
+                ],
+                "extraSupported": ["genre", "skip", "search"]
             },
             {
                 "type": "series",
-                "id": "tg_series",
-                "name": f"{ADDON_NAME} Series",
+                "id": "latest_series",
+                "name": "Latest",
                 "extra": [
-                    {"name": "search", "isRequired": False},
                     {"name": "genre", "isRequired": False, "options": GENRES},
-                    {"name": "skip", "isRequired": False}
-                ]
+                    {"name": "skip"}
+                ],
+                "extraSupported": ["genre", "skip"]
+            },
+            {
+                "type": "series",
+                "id": "top_series",
+                "name": "Popular",
+                "extra": [
+                    {"name": "genre", "isRequired": False, "options": GENRES},
+                    {"name": "skip"},
+                    {"name": "search", "isRequired": False}
+                ],
+                "extraSupported": ["genre", "skip", "search"]
             }
-        ])
+        ]
 
-    return manifest
+        try:
+            custom_catalogs = await db.get_custom_catalogs()
+            for catalog in custom_catalogs:
+                visible_items = [
+                    i for i in (catalog.get("items") or [])
+                    if _token_can_view(*_effective_visibility(catalog, i), token_data)
+                ]
+                has_movie = any(i.get("media_type") == "movie" for i in visible_items)
+                has_tv = any(i.get("media_type") == "tv" for i in visible_items)
+
+                cat_name = catalog.get("name", "Custom")
+                cat_id = catalog.get("_id")
+                
+                if has_movie:
+                    catalogs.append({
+                        "type": "movie",
+                        "id": f"custom_{cat_id}",
+                        "name": cat_name,
+                        "extra": [{"name": "skip"}]
+                    })
+                if has_tv:
+                    catalogs.append({
+                        "type": "series",
+                        "id": f"custom_{cat_id}",
+                        "name": cat_name,
+                        "extra": [{"name": "skip"}]
+                    })
+        except Exception as e:
+            LOGGER.error(f"Error appending custom catalogs to manifest: {e}")
+
+    #----- Expiry and user naming
+    addon_name = ADDON_NAME
+    addon_version = ADDON_VERSION
+    addon_desc = "Stream movies and TV shows directly from your Telegram bot via Stremio."
+    
+    try:
+        user_id = token_data.get("user_id")
+        user = await db.get_user(int(user_id)) if user_id else None
+        if user:
+            name = user.get("first_name") or user.get("username") or f"User {user_id}"
+            is_premium = user.get("subscription_status") == "active"
+            addon_name = f"{ADDON_NAME} {'🌟 ' if is_premium else ''}({name})"
+            
+        expiry = token_data.get("expires_at")
+        if expiry:
+            expiry_obj = datetime.fromtimestamp(expiry, timezone.utc)
+            addon_desc = (
+                f"Valid until {expiry_obj.strftime('%d %b %Y')}.\n"
+                f"Stream movies and TV shows directly from your Telegram bot via Stremio."
+            )
+            epoch_tag = format(int(expiry_obj.timestamp()) & 0xFFFF, "x")
+            addon_version = f"{ADDON_VERSION}-{epoch_tag}"
+    except Exception:
+        pass
+
+    return {
+        "id": f"telegram.media.{token[:8]}",
+        "version": addon_version,
+        "name": addon_name,
+        "logo": "https://i.postimg.cc/XqWnmDXr/Picsart-25-10-09-08-09-45-867.png",
+        "description": addon_desc,
+        "types": ["movie", "series"],
+        "resources": resources,
+        "catalogs": catalogs,
+        "idPrefixes": ["tt", "tg", "tmdb", "tmdb:"],
+        "behaviorHints": {
+            "configurable": True,
+            "configurationRequired": False
+        },
+        "config": [
+            {
+                "key": "token",
+                "type": "text",
+                "required": True,
+                "title": "Access Token"
+            }
+        ]
+    }
 
 
-@router.get("/{token}/catalog/{media_type}/{catalog_id}.json")
-@router.get("/{token}/catalog/{media_type}/{catalog_id}/{extra}.json")
-async def get_catalog(
-    token: str,
-    media_type: str,
-    catalog_id: str,
-    extra: str = None,
-    token_data: dict = Depends(verify_token)
-):
-    skip = 0
-    search_query = ""
-    genre_filter = ""
+#----- Retrieve items for a catalog (Latest, Popular, or Custom)
+@router.get("/{token}/catalog/{media_type}/{id}.json")
+@router.get("/{token}/catalog/{media_type}/{id}/{extra}.json")
+async def get_catalog(token: str, media_type: str, id: str, extra: Optional[str] = None, token_data: dict = Depends(verify_token)):
+    if SettingsManager.current().hide_catalog:
+        raise HTTPException(status_code=404, detail="Catalog disabled")
+
+    if media_type not in ["movie", "series"]:
+        raise HTTPException(status_code=404, detail="Invalid catalog type")
+
+    genre_filter = None
+    search_query = None
+    stremio_skip = 0
 
     if extra:
-        try:
-            extra = unquote(extra)
-            parts = extra.split("&")
-            for part in parts:
-                if "=" in part:
-                    k, v = part.split("=", 1)
-                    if k == "skip":
-                        skip = int(v)
-                    elif k == "search":
-                        search_query = v
-                    elif k == "genre":
-                        genre_filter = v
-        except Exception:
-            pass
+        params = extra.replace("&", "/").split("/")
+        for param in params:
+            if param.startswith("genre="):
+                genre_filter = unquote(param.removeprefix("genre="))
+            elif param.startswith("search="):
+                search_query = unquote(param.removeprefix("search="))
+            elif param.startswith("skip="):
+                try:
+                    stremio_skip = int(param.removeprefix("skip="))
+                except ValueError:
+                    stremio_skip = 0
 
-    vis_query = _visibility_query(token_data)
+    page = (stremio_skip // PAGE_SIZE) + 1
 
-    if catalog_id.startswith("tg_custom_"):
-        real_id = catalog_id.replace("tg_custom_", "")
-        catalog = await db.get_custom_catalog(real_id)
-        if not catalog:
-            return {"metas": []}
+    try:
+        if id.startswith("custom_"):
+            catalog_id = id.removeprefix("custom_")
+            catalog = await db.get_custom_catalog(catalog_id)
+            if not catalog:
+                return {"metas": []}
 
-        cat_vis = catalog.get("visibility") or "public"
-        if not _token_can_view(cat_vis, catalog.get("allowed_tokens") or [], token_data):
-            return {"metas": []}
+            db_media_type = "tv" if media_type == "series" else "movie"
+            visible_items = [
+                it for it in (catalog.get("items") or [])
+                if it.get("media_type") == db_media_type
+                and _token_can_view(*_effective_visibility(catalog, it), token_data)
+            ]
+            visible_items.sort(key=lambda it: it.get("updated_on") or it.get("added_at") or datetime.min, reverse=True)
+            start = (page - 1) * PAGE_SIZE
+            items = await db.get_documents(visible_items[start:start + PAGE_SIZE])
+            items = [it for it in items if _token_can_view(it.get("visibility") or "public", it.get("allowed_tokens") or [], token_data)]
+        elif search_query:
+            search_results = await db.search_documents(
+                query=search_query, page=page, page_size=PAGE_SIZE,
+                extra_filter=_merge_filters(_visibility_query(token_data), _not_exclusive_clause(allow_searchable=True)),
+            )
+            all_items = search_results.get("results", [])
+            db_media_type = "tv" if media_type == "series" else "movie"
+            items = [item for item in all_items if item.get("media_type") == db_media_type]
+        else:
+            if "latest" in id:
+                sort_params = [("updated_on", "desc")]
+            elif "top" in id:
+                sort_params = [("rating", "desc")]
+            else:
+                sort_params = [("updated_on", "desc")]
 
-        item_refs = catalog.get("items", [])
-        if not item_refs:
-            return {"metas": []}
-
-        id_map = {
-            (ref["imdb_id"], ref.get("tmdb_id"), ref.get("media_type")): ref
-            for ref in item_refs
-        }
-        db_type = "tv" if media_type == "series" else "movie"
-
-        base_query = _merge_filters(
-            {"media_type": db_type},
-            vis_query,
-            {"$or": [
-                {"imdb_id": {"$in": [r["imdb_id"] for r in item_refs if r.get("imdb_id")]}},
-                {"tmdb_id": {"$in": [r["tmdb_id"] for r in item_refs if r.get("tmdb_id")]}}
-            ]}
-        )
-
-        if search_query:
-            base_query["title"] = {"$regex": search_query, "$options": "i"}
-
-        items = await db.get_media_list(query=base_query, limit=0)
-
-        filtered = []
-        for doc in items:
-            key = (doc.get("imdb_id"), doc.get("tmdb_id"), doc.get("media_type"))
-            ref = id_map.get(key)
-            if not ref:
-                continue
-            eff_vis, eff_tokens = _effective_visibility(catalog, ref)
-            if _token_can_view(eff_vis, eff_tokens, token_data):
-                filtered.append(doc)
-
-        order_map = {
-            (ref["imdb_id"], ref.get("tmdb_id"), ref.get("media_type")): i
-            for i, ref in enumerate(item_refs)
-        }
-        filtered.sort(key=lambda d: order_map.get(
-            (d.get("imdb_id"), d.get("tmdb_id"), d.get("media_type")),
-            999999
-        ))
-
-        page_items = filtered[skip: skip + PAGE_SIZE]
-
-    elif catalog_id in ("tg_movies", "tg_series") and SettingsManager.current().show_default_catalogs:
-        db_type = "tv" if media_type == "series" else "movie"
-        allow_searchable = bool(search_query)
-
-        query_filters = [
-            {"media_type": db_type},
-            vis_query,
-            _not_exclusive_clause(allow_searchable)
-        ]
-        if search_query:
-            query_filters.append({"title": {"$regex": search_query, "$options": "i"}})
-        if genre_filter:
-            query_filters.append({"genres": genre_filter})
-
-        final_query = _merge_filters(*query_filters)
-        page_items = await db.get_media_list(
-            query=final_query,
-            skip=skip,
-            limit=PAGE_SIZE,
-            sort=[("_id", -1)]
-        )
-    else:
-        page_items = []
+            vis_filter = _merge_filters(_visibility_query(token_data), _not_exclusive_clause())
+            if media_type == "movie":
+                data = await db.sort_movies(sort_params, page, PAGE_SIZE, genre_filter=genre_filter, extra_filter=vis_filter)
+                items = data.get("movies", [])
+            else:
+                data = await db.sort_tv_shows(sort_params, page, PAGE_SIZE, genre_filter=genre_filter, extra_filter=vis_filter)
+                items = data.get("tv_shows", [])
+    except Exception as e:
+        LOGGER.error(f"Catalog error ({id}): {e}")
+        return {"metas": []}
 
     metas = []
-    for item in page_items:
-        meta = convert_to_stremio_meta(item)
-        await _apply_fanart(meta, item)
-        metas.append(meta)
+    for item in items:
+        meta_obj = convert_to_stremio_meta(item)
+        await _apply_fanart(meta_obj, item)
+        metas.append(meta_obj)
 
     return {"metas": metas}
 
 
+#----- Detailed metadata for a title, including series episode list
 @router.get("/{token}/meta/{media_type}/{id}.json")
 async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depends(verify_token)):
     if SettingsManager.current().hide_catalog:
         raise HTTPException(status_code=404, detail="Catalog disabled")
 
-    # If it's a TMDB ID, local DB lookup might fail unless saved strictly. We bypass parsing for DB lookup.
     imdb_id = id
 
     media = await db.get_media_details(imdb_id=imdb_id)
@@ -516,12 +533,14 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
     if released_date:
         meta_obj["released"] = released_date
 
+    #----- Series episodes
     if media_type == "series" and "seasons" in media:
         yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
         videos = []
         for season in sorted(media.get("seasons", []), key=lambda s: s.get("season_number")):
             for episode in sorted(season.get("episodes", []), key=lambda e: e.get("episode_number")):
                 episode_id = f"{id}:{season['season_number']}:{episode['episode_number']}"
+                
                 video = {
                     "id": episode_id,
                     "title": episode.get("episode_title") or f"Episode {episode['episode_number']}",
@@ -533,24 +552,20 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
                 if episode.get("episode_backdrop"):
                     video["thumbnail"] = _abs_media_url(episode["episode_backdrop"])
                 videos.append(video)
+                
         meta_obj["videos"] = videos
 
     return {"meta": meta_obj}
 
 
+#----- Retrieve subtitles for a given episode or movie
 @router.get("/{token}/subtitles/{media_type}/{id}.json")
 async def get_subtitles(token: str, media_type: str, id: str, extra: Optional[str] = None, token_data: dict = Depends(verify_token)):
     try:
-        if id.startswith("tmdb:"):
-            parts = id.split(":")
-            imdb_id = f"tmdb:{parts[1]}"
-            season = int(parts[2]) if len(parts) > 2 else None
-            episode = int(parts[3]) if len(parts) > 3 else None
-        else:
-            parts = id.split(":")
-            imdb_id = parts[0]
-            season = int(parts[1]) if len(parts) > 1 else None
-            episode = int(parts[2]) if len(parts) > 2 else None
+        parts = id.split(":")
+        imdb_id = parts[0]
+        season = int(parts[1]) if len(parts) > 1 else None
+        episode = int(parts[2]) if len(parts) > 2 else None
     except (ValueError, IndexError):
         return {"subtitles": []}
 
@@ -561,10 +576,11 @@ async def get_subtitles(token: str, media_type: str, id: str, extra: Optional[st
     return {"subtitles": stremio_subtitle_entries(subs, token, SettingsManager.current().base_url)}
 
 
+#----- Collect Global Search streams for a title/episode via IMDb lookup
 async def _global_streams_for(token: str, imdb_id: str, media_type: str, season_num: Optional[int], episode_num: Optional[int]) -> list:
     imdb_media_type = "tvSeries" if media_type == "series" else "movie"
 
-    # Natively Handle TMDB IDs directly using our internal metadata cache instead of Cinemeta!
+    # Handle TMDB IDs directly using our internal metadata cache instead of Cinemeta!
     if imdb_id.startswith("tmdb:"):
         tmdb_id_num = imdb_id.split(":")[1]
         from Backend.helper.metadata import _tmdb_details, _tmdb_title_year
@@ -617,6 +633,7 @@ async def _global_streams_for(token: str, imdb_id: str, media_type: str, season_
     return streams
 
 
+#----- Cached check that a user is still in the subscription group (fail-open)
 async def _is_subscription_member(user_id: int) -> bool:
     group_id = SettingsManager.current().subscription_group_id
     if not group_id:
@@ -647,6 +664,7 @@ async def _is_subscription_member(user_id: int) -> bool:
     return result
 
 
+#----- Resolve playable streams for a title (Telegram library or Global Search)
 @router.get("/{token}/stream/{media_type}/{id}.json")
 async def get_streams(
     token: str,
@@ -666,6 +684,8 @@ async def get_streams(
             ]
         }
 
+    #----- Subscription users must currently be members of the configured group.
+    #----- Admin, lifetime and admin-set token-expiry grants skip this check.
     if (SettingsManager.current().subscription
             and not token_data.get("is_admin")
             and not token_data.get("subscription_exempt")
@@ -795,6 +815,8 @@ async def get_streams(
             s["name"] = f"{s['name']} ({seen[s['name']]})"
     return {"streams": streams}
 
+
+#----- Configure/install landing page rendered as HTML for a token
 @router.get("/{token}/configure")
 async def configure_addon(token: str, request: Request):
     manifest_url = f"{SettingsManager.current().base_url}/stremio/{token}/manifest.json"
