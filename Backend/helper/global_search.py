@@ -100,6 +100,7 @@ def _title_score(result_title: str, expected_title: str, expected_year: Optional
 
 def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode: Optional[int]) -> bool:
     if season is None and episode is None:
+        # If we asked for a movie (no season/episode), but the file explicitly has an episode number, reject it!
         if parsed.get("episode") is not None or parsed.get("season") is not None:
             return False
         return True
@@ -119,23 +120,33 @@ def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode
                 return False
 
     if episode is not None:
+        # Check standard S01E01 format
         m = re.search(r"S\d{1,2}E(\d{1,3})", filename, re.IGNORECASE)
+        # Check EP34 or Episode 34 format
         m2 = re.search(r"EP(?:ISODE)?[\s._\-\[\(\{]*(\d{1,3})", filename, re.IGNORECASE)
         if m and int(m.group(1)) == episode:
             return True
         if m2 and int(m2.group(1)) == episode:
             return True
 
-    for value, parsed_key in ((season, "season"), (episode, "episode")):
-        if value is None:
-            continue
-        rv = parsed.get(parsed_key)
-        if rv is None:
+    # If the manual regex failed, check what PTN found
+    parsed_ep = parsed.get("episode")
+    if parsed_ep is not None:
+        if isinstance(parsed_ep, list) and episode not in parsed_ep:
             return False
-        if isinstance(rv, list):
-            if value not in rv:
-                return False
-        elif int(rv) != int(value):
+        elif not isinstance(parsed_ep, list) and int(parsed_ep) != episode:
+            return False
+    else:
+        # If PTN found NO episode number, AND our manual regexes found NO episode number...
+        # and this isn't a Season pack (combined), then we must reject it.
+        if episode is not None and not combined:
+            return False
+
+    parsed_season = parsed.get("season")
+    if parsed_season is not None:
+        if isinstance(parsed_season, list) and season not in parsed_season:
+            return False
+        elif not isinstance(parsed_season, list) and int(parsed_season) != season:
             return False
             
     return True
