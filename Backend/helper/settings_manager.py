@@ -32,6 +32,7 @@ _DEFAULTS: Dict[str, Any] = {
     "multi_tokens": [],
     "extra_databases": [],
     "global_search": False,
+    "global_database_uri": "",
     "global_search_channels": [],
     "anime_channels": [],
     "manual_channels": [],
@@ -68,6 +69,7 @@ def _seed_from_env() -> Dict[str, Any]:
         "subscription":                 Telegram.SUBSCRIPTION,
         "subscription_group_id":        Telegram.SUBSCRIPTION_GROUP_ID,
         "approver_ids":                 list(Telegram.APPROVER_IDS),
+        "global_database_uri":          "",
         "global_search_channels":       [],
         "http_proxy_url":               Telegram.HTTP_PROXY_URL,
         "show_proxy_and_non_proxy_both": Telegram.SHOW_PROXY_AND_NON_PROXY_BOTH,
@@ -118,6 +120,10 @@ class Settings:
     @property
     def global_search_channels(self):
         return list(self._d.get("global_search_channels") or [])
+
+    @property
+    def global_database_uri(self) -> str:
+        return str(self._d.get("global_database_uri") or "").strip()
 
     @property
     def anime_channels(self) -> List[str]:

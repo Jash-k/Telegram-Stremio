@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block title %}Global Search Management{% endblock %}
+
+{% block header_title %}Global Search Management{% endblock %}
+{% block header_desc %}Manage your MongoDB-backed Global Search files and catalogs.{% endblock %}
+
+{% block content %}
+<style>
+    .global-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1.5rem;
+        margin-bottom: 2rem;
+    }
+    .stat-card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 1.5rem;
+        text-align: center;
+    }
+    .stat-val { font-size: 2rem; font-weight: 800; color: var(--text); }
+    .stat-lbl { font-size: 0.85rem; color: var(--text-sec); font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; margin-top: 0.5rem; }
+    
+    .table-wrap {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+        margin-bottom: 2rem;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 1rem; text-align: left; border-bottom: 1px solid var(--border); }
+    th { background: var(--surface); font-size: 0.85rem; color: var(--text-sec); text-transform: uppercase; }
+    td { font-size: 0.95rem; }
+    tr:last-child td { border-bottom: none; }
+</style>
+
+{% if not has_global_db %}
+<div class="settings-card" style="text-align: center; padding: 3rem 1rem;">
+    <i class="fa-solid fa-database" style="font-size: 3rem; color: var(--text-sec); margin-bottom: 1rem;"></i>
+    <h2 style="margin-bottom: 0.5rem;">No Global Database Configured</h2>
+    <p style="color: var(--text-sec);">You must configure a <code>GLOBAL_DATABASE_URI</code> in Settings to manage Database-backed Global Search.</p>
+</div>
+{% else %}
+
+<div class="global-stats">
+    <div class="stat-card">
+        <div class="stat-val" id="stat-files">...</div>
+        <div class="stat-lbl">Indexed Files</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-val" id="stat-catalogs">...</div>
+        <div class="stat-lbl">Global Catalogs</div>
+    </div>
+    <div class="stat-card" style="border: 2px dashed var(--primary); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.5rem;">
+        <button id="btn-index" onclick="startIndexer()" class="btn btn-primary" style="width: 100%;"><i class="fa-solid fa-play"></i> Start Indexer</button>
+        <span id="lbl-index-status" style="font-size: 0.8rem; font-weight: 600; color: var(--text-sec);">IDLE</span>
+    </div>
+</div>
+
+<div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th>Catalog Name</th>
+                <th>Type</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="catalog-list">
+            <tr><td colspan="3" style="text-align:center;">Loading...</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+    <h3 style="font-size:1.1rem; font-weight:600;">Recent Indexed Files</h3>
+    <button onclick="clearAllFiles()" class="btn btn-danger"><i class="fa-solid fa-trash"></i> Purge All Files</button>
+</div>
+
+<div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th>Filename</th>
+                <th>Size</th>
+                <th>Catalog</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="file-list">
+            <tr><td colspan="4" style="text-align:center;">Loading...</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<script>
+async function checkIndexer() {
+    try {
+        const res = await fetch('/api/admin/global/index/status');
+        const data = await res.json();
+        const btn = document.getElementById('btn-index');
+        const lbl = document.getElementById('lbl-index-status');
+        if (data.running) {
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Indexing...';
+            lbl.textContent = "RUNNING IN BACKGROUND";
+            lbl.style.color = "#22c55e";
+            setTimeout(checkIndexer, 5000);
+        } else {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa-solid fa-play"></i> Start Indexer';
+            lbl.textContent = "IDLE";
+            lbl.style.color = "var(--text-sec)";
+        }
+    } catch (e) {}
+}
+
+async function startIndexer() {
+    if (!confirm("Start the background indexer? This will scan your global channels, fetch TMDB data, and add the files to this database.")) return;
+    await fetch('/api/admin/global/index/start', {method: 'POST'});
+    checkIndexer();
+}
+
+async function loadData() {
+    try {
+        const res = await fetch('/api/admin/global/stats');
+        const data = await res.json();
+        
+        document.getElementById('stat-files').textContent = data.files_count || 0;
+        document.getElementById('stat-catalogs').textContent = (data.catalogs || []).length;
+        
+        const catList = document.getElementById('catalog-list');
+        catList.innerHTML = '';
+        if (data.catalogs.length === 0) {
+            catList.innerHTML = '<tr><td colspan="3" style="text-align:center;">No catalogs found.</td></tr>';
+        } else {
+            data.catalogs.forEach(c => {
+                catList.innerHTML += `<tr>
+                    <td><strong>${c.name}</strong> <span style="color:var(--text-sec);font-size:0.8rem;">(${c._id})</span></td>
+                    <td>${c.type}</td>
+                    <td>
+                        <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteCatalog('${c._id}')">Delete</button>
+                    </td>
+                </tr>`;
+            });
+        }
+        
+        const fileList = document.getElementById('file-list');
+        fileList.innerHTML = '';
+        if (data.recent_files.length === 0) {
+            fileList.innerHTML = '<tr><td colspan="4" style="text-align:center;">No files found.</td></tr>';
+        } else {
+            data.recent_files.forEach(f => {
+                fileList.innerHTML += `<tr>
+                    <td><div style="max-width:300px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${f.filename}">${f.filename}</div></td>
+                    <td>${f.size_str || '0 MB'}</td>
+                    <td>${f.catalog || '-'}</td>
+                    <td>
+                        <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteFile('${f._id}')">Delete</button>
+                    </td>
+                </tr>`;
+            });
+        }
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+async function deleteCatalog(id) {
+    if (!confirm('Delete this catalog?')) return;
+    await fetch(`/api/admin/global/catalogs/${id}`, { method: 'DELETE' });
+    loadData();
+}
+
+async function deleteFile(id) {
+    if (!confirm('Delete this file?')) return;
+    await fetch(`/api/admin/global/files/${id}`, { method: 'DELETE' });
+    loadData();
+}
+
+async function clearAllFiles() {
+    if (!confirm('Are you absolutely sure you want to delete ALL indexed files in the Global Search DB?')) return;
+    await fetch(`/api/admin/global/files`, { method: 'DELETE' });
+    loadData();
+}
+
+document.addEventListener("DOMContentLoaded", () => { loadData(); checkIndexer(); });
+</script>
+{% endif %}
+{% endblock %}

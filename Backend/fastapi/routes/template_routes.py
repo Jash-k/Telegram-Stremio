@@ -271,3 +271,14 @@ async def settings_page(request: Request, _: bool = Depends(require_auth)):
         "userbot_configured": bool(Telegram.USER_SESSION_STRING and Telegram.USER_SESSION_STRING.strip()),
     })
     return templates.TemplateResponse("settings.html", ctx)
+
+
+async def global_manage_page(request: Request, user_id: str):
+    from Backend.helper.settings_manager import SettingsManager
+    theme = get_theme(request.session.get("theme", DEFAULT_THEME))
+    has_global_db = bool(SettingsManager.current().global_database_uri)
+    return templates.TemplateResponse("global_manage.html", {
+        "request": request,
+        "theme": theme,
+        "has_global_db": has_global_db
+    })

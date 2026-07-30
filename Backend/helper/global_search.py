@@ -23,7 +23,6 @@ from Backend.helper.pyro import get_readable_file_size
 from Backend.pyrofork.bot import Userbot
 
 from Backend.helper.split_files import parse_combined_episodes
-from rapidfuzz import fuzz
 
 MAX_RESULTS = 25
 MAX_RESULTS_PER_CHAT = 15
@@ -53,6 +52,8 @@ def is_global_search_enabled() -> bool:
     return bool(s.global_search and s.global_search_channels)
 
 
+from rapidfuzz import fuzz
+
 def _title_score(result_title: str, expected_title: str, expected_year: Optional[int] = None, raw_filename: str = "") -> float:
     if not result_title or not expected_title:
         return 0.0
@@ -63,14 +64,12 @@ def _title_score(result_title: str, expected_title: str, expected_year: Optional
         
     da, db = get_digits(a), get_digits(b)
     
-    # If the file explicitly contains a year that differs from the expected year, reject it.
     if expected_year:
         year_str = str(expected_year)
         years_in_result = set(re.findall(r'\b(19\d{2}|20\d{2})\b', raw_filename))
         if years_in_result and year_str not in years_in_result:
             return 0.0
     
-    # Pre-process strings to handle bracket tags common in Telegram uploads
     a_clean = re.sub(r'^[\[\(\{\<].*?[\]\)\}\>]\s*', '', a)
     a_clean = re.split(r' \- | ~ ', a_clean)[0].strip()
     
@@ -100,7 +99,6 @@ def _title_score(result_title: str, expected_title: str, expected_year: Optional
 
 def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode: Optional[int]) -> bool:
     if season is None and episode is None:
-        # If we asked for a movie (no season/episode), but the file explicitly has an episode number, reject it!
         if parsed.get("episode") is not None or parsed.get("season") is not None:
             return False
         return True
@@ -129,7 +127,6 @@ def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode
         if m2 and int(m2.group(1)) == episode:
             return True
 
-    # If the manual regex failed, check what PTN found
     parsed_ep = parsed.get("episode")
     if parsed_ep is not None:
         if isinstance(parsed_ep, list) and episode not in parsed_ep:
@@ -139,6 +136,7 @@ def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode
     else:
         # If PTN found NO episode number, AND our manual regexes found NO episode number...
         # and this isn't a Season pack (combined), then we must reject it.
+        # Otherwise, every file missing an episode number would show up for every single episode!
         if episode is not None and not combined:
             return False
 
@@ -151,6 +149,370 @@ def _matches_episode(parsed: dict, filename: str, season: Optional[int], episode
             
     return True
 
+    from Backend.helper.split_files import parse_combined_episodes
+    combined = parse_combined_episodes(filename)
+    
+    if combined and combined["season"] == season:
+        start = combined.get("start")
+        end = combined.get("end")
+        if start is None and end is None:
+            return True
+        if start is not None and end is not None and episode is not None:
+            if start <= episode <= end:
+                return True
+            else:
+                return False
+
+    if episode is not None:
+        m = re.search(r"S\d{1,2}E(\d{1,3})", filename, re.IGNORECASE)
+        m2 = re.search(r"EP(?:ISODE)?[\s._\-\[\(\{]*(\d{1,3})", filename, re.IGNORECASE)
+        if m and int(m.group(1)) == episode:
+            return True
+        if m2 and int(m2.group(1)) == episode:
+            return True
+
+    # If PTN found an episode, check it.
+    parsed_ep = parsed.get("episode")
+    if parsed_ep is not None:
+        if isinstance(parsed_ep, list) and episode not in parsed_ep:
+            return False
+        elif not isinstance(parsed_ep, list) and int(parsed_ep) != episode:
+            return False
+    else:
+        # PTN did NOT find an episode.
+        # But if we are looking for a specific episode (and it's not a season pack), we must reject it.
+        # Example: 'Top Cooku S02 E .mkv' (uploader truncated the episode number)
+        if episode is not None and not combined:
+            return False
+
+    parsed_season = parsed.get("season")
+    if parsed_season is not None:
+        if isinstance(parsed_season, list) and season not in parsed_season:
+            return False
+        elif not isinstance(parsed_season, list) and int(parsed_season) != season:
+            return False
+            
+    return True
+
+    # If we asked for a Series, but the file explicitly states it is a Movie (or doesn't have an episode), reject it!
+    # Wait, PTN doesn't explicitly flag "Movie", but we can rely on our logic below.
+
+    from Backend.helper.split_files import parse_combined_episodes
+    combined = parse_combined_episodes(filename)
+    
+    if combined and combined["season"] == season:
+        start = combined.get("start")
+        end = combined.get("end")
+        if start is None and end is None:
+            return True
+        if start is not None and end is not None and episode is not None:
+            if start <= episode <= end:
+                return True
+            else:
+                return False
+
+    if episode is not None:
+        m = re.search(r"S\d{1,2}E(\d{1,3})", filename, re.IGNORECASE)
+        m2 = re.search(r"EP(?:ISODE)?[\s._\-\[\(\{]*(\d{1,3})", filename, re.IGNORECASE)
+        if m and int(m.group(1)) == episode:
+            return True
+        if m2 and int(m2.group(1)) == episode:
+            return True
+
+    # Check PTN result
+    for value, parsed_key in ((season, "season"), (episode, "episode")):
+        if value is None:
+            continue
+        rv = parsed.get(parsed_key)
+        if rv is None:
+            # If we are looking for a specific season/episode and the parser found nothing,
+            # then it does not match (this blocks Movies from showing up in Series searches).
+            return False
+        if isinstance(rv, list):
+            if value not in rv:
+                return False
+        elif int(rv) != int(value):
+            return False
+            
+    return True
+
+    from Backend.helper.split_files import parse_combined_episodes
+    combined = parse_combined_episodes(filename)
+    
+    if combined and combined["season"] == season:
+        start = combined.get("start")
+        end = combined.get("end")
+        if start is None and end is None:
+            return True
+        if start is not None and end is not None and episode is not None:
+            if start <= episode <= end:
+                return True
+            else:
+                return False
+
+    if episode is not None:
+        m = re.search(r"S\d{1,2}E(\d{1,3})", filename, re.IGNORECASE)
+        m2 = re.search(r"EP(?:ISODE)?[\s._\-\[\(\{]*(\d{1,3})", filename, re.IGNORECASE)
+        if m and int(m.group(1)) == episode:
+            return True
+        if m2 and int(m2.group(1)) == episode:
+            return True
+
+    # Check PTN result
+    for value, parsed_key in ((season, "season"), (episode, "episode")):
+        if value is None:
+            continue
+        rv = parsed.get(parsed_key)
+        if rv is None:
+            # If we are looking for a specific season/episode and the parser found nothing,
+            # then it does not match.
+            return False
+        if isinstance(rv, list):
+            if value not in rv:
+                return False
+        elif int(rv) != int(value):
+            return False
+            
+    return True
+
+    from Backend.helper.split_files import parse_combined_episodes
+    combined = parse_combined_episodes(filename)
+    
+    if combined and combined["season"] == season:
+        start = combined.get("start")
+        end = combined.get("end")
+        if start is None and end is None:
+            return True
+        if start is not None and end is not None and episode is not None:
+            if start <= episode <= end:
+                return True
+            else:
+                return False
+
+    if episode is not None:
+        m = re.search(r"S\d{1,2}E(\d{1,3})", filename, re.IGNORECASE)
+        m2 = re.search(r"EP(?:ISODE)?[\s._\-\[\(\{]*(\d{1,3})", filename, re.IGNORECASE)
+        if m and int(m.group(1)) == episode:
+            return True
+        if m2 and int(m2.group(1)) == episode:
+            return True
+
+    # Check PTN result
+    for value, parsed_key in ((season, "season"), (episode, "episode")):
+        if value is None:
+            continue
+        rv = parsed.get(parsed_key)
+        if rv is None:
+            # If we are looking for a specific season/episode and the parser found nothing,
+            # then it does not match.
+            return False
+        if isinstance(rv, list):
+            if value not in rv:
+                return False
+        elif int(rv) != int(value):
+            return False
+            
+    return True
+
+    from Backend.helper.split_files import parse_combined_episodes
+    combined = parse_combined_episodes(filename)
+    
+    if combined and combined["season"] == season:
+        start = combined.get("start")
+        end = combined.get("end")
+        if start is None and end is None:
+            return True
+        if start is not None and end is not None and episode is not None:
+            if start <= episode <= end:
+                return True
+            else:
+                return False
+
+    if episode is not None:
+        m = re.search(r"S\d{1,2}E(\d{1,3})", filename, re.IGNORECASE)
+        m2 = re.search(r"EP(?:ISODE)?[\s._\-\[\(\{]*(\d{1,3})", filename, re.IGNORECASE)
+        if m and int(m.group(1)) == episode:
+            return True
+        if m2 and int(m2.group(1)) == episode:
+            return True
+
+    for value, parsed_key in ((season, "season"), (episode, "episode")):
+        if value is None:
+            continue
+        rv = parsed.get(parsed_key)
+        if rv is None:
+            continue
+        if isinstance(rv, list):
+            if value not in rv:
+                return False
+        elif int(rv) != int(value):
+            return False
+            
+    return True
+
+    from Backend.helper.split_files import parse_combined_episodes
+    combined = parse_combined_episodes(filename)
+    
+    if combined and combined["season"] == season:
+        start = combined.get("start")
+        end = combined.get("end")
+        if start is None and end is None:
+            return True
+        if start is not None and end is not None and episode is not None:
+            if start <= episode <= end:
+                return True
+            else:
+                return False
+
+    if episode is not None:
+        m = re.search(r"S\d{1,2}E(\d{1,3})", filename, re.IGNORECASE)
+        m2 = re.search(r"EP(?:ISODE)?[\s._-]*(\d{1,3})", filename, re.IGNORECASE)
+        if m and int(m.group(1)) == episode:
+            return True
+        if m2 and int(m2.group(1)) == episode:
+            return True
+
+    for value, parsed_key in ((season, "season"), (episode, "episode")):
+        if value is None:
+            continue
+        rv = parsed.get(parsed_key)
+        if rv is None:
+            continue
+        if isinstance(rv, list):
+            if value not in rv:
+                return False
+        elif int(rv) != int(value):
+            return False
+            
+    return True
+
+    from Backend.helper.split_files import parse_combined_episodes
+    combined = parse_combined_episodes(filename)
+    
+    if combined and combined["season"] == season:
+        start = combined.get("start")
+        end = combined.get("end")
+        if start is None and end is None:
+            return True
+        if start is not None and end is not None and episode is not None:
+            if start <= episode <= end:
+                return True
+            else:
+                return False
+
+    if episode is not None:
+        m = re.search(r"S\d{1,2}E(\d{1,3})", filename, re.IGNORECASE)
+        m2 = re.search(r"EP(?:ISODE)?\[\s._-]*(\d{1,3})", filename, re.IGNORECASE)
+        if m and int(m.group(1)) == episode:
+            return True
+        if m2 and int(m2.group(1)) == episode:
+            return True
+
+    for value, parsed_key in ((season, "season"), (episode, "episode")):
+        if value is None:
+            continue
+        rv = parsed.get(parsed_key)
+        if rv is None:
+            continue
+        if isinstance(rv, list):
+            if value not in rv:
+                return False
+        elif int(rv) != int(value):
+            return False
+            
+    return True
+
+    from Backend.helper.split_files import parse_combined_episodes
+    combined = parse_combined_episodes(filename)
+    
+    # If the file is a combined range but doesn't have a season explicitly written, assume it matches the requested season
+    if combined and combined["season"] == season:
+        start = combined.get("start")
+        end = combined.get("end")
+        if start is None and end is None:
+            # Full season pack matches any episode
+            return True
+        if start is not None and end is not None and episode is not None:
+            # ONLY return true if the requested episode is ACTUALLY inside the combined range!
+            if start <= episode <= end:
+                return True
+            else:
+                return False
+
+    # Check for direct SxxEyy match via regex as a final failsafe
+    if episode is not None:
+        m = re.search(r"S\d{1,2}E(\d{1,3})", filename, re.IGNORECASE)
+        m2 = re.search(r"EP(?:ISODE)?[\s._-]*(\d{1,3})", filename, re.IGNORECASE)
+        if m and int(m.group(1)) == episode:
+            return True
+        if m2 and int(m2.group(1)) == episode:
+            return True
+
+    for value, parsed_key in ((season, "season"), (episode, "episode")):
+        if value is None:
+            continue
+        rv = parsed.get(parsed_key)
+        if rv is None:
+            continue
+        if isinstance(rv, list):
+            if value not in rv:
+                return False
+        elif int(rv) != int(value):
+            return False
+            
+    return True
+
+    combined = parse_combined_episodes(filename)
+    if combined and combined["season"] == season:
+        start = combined.get("start")
+        end = combined.get("end")
+        if start is None and end is None:
+            # Full season pack matches any episode
+            return True
+        if start is not None and end is not None and episode is not None:
+            # ONLY return true if the requested episode is ACTUALLY inside the combined range!
+            if start <= episode <= end:
+                return True
+            else:
+                return False # <--- EXPLICITLY RETURN FALSE SO IT DOESN'T FALL THROUGH TO PTN
+
+    for value, parsed_key in ((season, "season"), (episode, "episode")):
+        if value is None:
+            continue
+        rv = parsed.get(parsed_key)
+        if rv is None:
+            continue
+        if isinstance(rv, list):
+            if value not in rv:
+                return False
+        elif int(rv) != int(value):
+            return False
+    return True
+
+    combined = parse_combined_episodes(filename)
+    if combined and combined["season"] == season:
+        start = combined.get("start")
+        end = combined.get("end")
+        if start is None and end is None:
+            # Full season pack matches any episode
+            return True
+        if start is not None and end is not None and episode is not None:
+            if start <= episode <= end:
+                return True
+
+    for value, parsed_key in ((season, "season"), (episode, "episode")):
+        if value is None:
+            continue
+        rv = parsed.get(parsed_key)
+        if rv is None:
+            continue
+        if isinstance(rv, list):
+            if value not in rv:
+                return False
+        elif int(rv) != int(value):
+            return False
+    return True
+
 
 def _parse_and_validate(filename: str, expected_title: str, expected_year: Optional[int], season: Optional[int], episode: Optional[int]) -> Optional[dict]:
     try:
@@ -161,6 +523,7 @@ def _parse_and_validate(filename: str, expected_title: str, expected_year: Optio
     if not _matches_episode(parsed, filename, season, episode):
         return None
         
+    # Check title score against parsed title OR raw filename (to catch years stripped by PTN)
     score = _title_score(parsed.get("title", ""), expected_title, expected_year, raw_filename=filename)
     if score < MIN_TITLE_SCORE:
         return None
@@ -285,6 +648,7 @@ async def _search_channel(
             except RPCError as e:
                 LOGGER.warning(f"[USERBOT] RPC error in {chat_title} ({msg_filter}): {e}")
         
+        # If this query found results, skip running the fallback queries for this channel to save time!
         if len(results) > 0:
             break
 
@@ -309,7 +673,6 @@ async def global_search(
         return []
 
     clean_title = re.sub(r'[^\w\s]', '', expected_title)
-    
     words = clean_title.split()
     fallback_query = words[0] if words and len(words[0]) >= 4 else ""
 
@@ -377,11 +740,13 @@ async def global_search(
                     if isinstance(r, list):
                         all_results.extend(r)
                         
+                    # Early Break! If we found 20 streams, cancel the rest of the channel searches instantly!
                     if len(all_results) >= 20:
                         break
                 except Exception as e:
                     LOGGER.warning(f"[GLOBAL SEARCH] Channel search error: {e}")
 
+            # Cancel remaining tasks to save memory and network bandwidth
             for task in search_tasks:
                 if not task.done():
                     task.cancel()

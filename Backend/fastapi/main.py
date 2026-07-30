@@ -112,6 +112,7 @@ from Backend.fastapi.routes.template_routes import (
     admin_subscriptions_page,
     public_request_page,
     custom_catalogs_page,
+    global_manage_page,
     dashboard_page,
     edit_media_page,
     login_page,
@@ -202,6 +203,10 @@ async def media_management(request: Request, media_type: str = "movie", custom: 
 @app.get("/catalogs", response_class=HTMLResponse)
 async def custom_catalogs(request: Request, _: bool = Depends(require_auth)):
     return await custom_catalogs_page(request, _)
+
+@app.get("/admin/global", response_class=HTMLResponse)
+async def global_manage(request: Request, _: bool = Depends(require_auth)):
+    return await global_manage_page(request, _)
 
 @app.get("/media/edit", response_class=HTMLResponse)
 async def edit_media(request: Request, tmdb_id: int, db_index: int, media_type: str, _: bool = Depends(require_auth)):
@@ -707,3 +712,57 @@ async def tools_duplicates_purge(payload: dict | None = None, _: bool = Depends(
 @app.exception_handler(401)
 async def auth_exception_handler(request: Request, exc):
     return RedirectResponse(url="/login", status_code=302)
+
+@app.get("/api/admin/global/stats")
+async def global_stats(_: bool = Depends(require_auth)):
+    from Backend import db
+    if not getattr(db, "global_db", None):
+        return {"files_count": 0, "catalogs": [], "recent_files": []}
+    files_count = await db.global_db["files"].count_documents({})
+    cats_cursor = db.global_db["catalogs"].find()
+    catalogs = [c async for c in cats_cursor]
+    files_cursor = db.global_db["files"].find().sort("_id", -1).limit(50)
+    files = [f async for f in files_cursor]
+    return {
+        "files_count": files_count,
+        "catalogs": catalogs,
+        "recent_files": files
+    }
+
+@app.delete("/api/admin/global/catalogs/{cat_id}")
+async def delete_global_cat(cat_id: str, _: bool = Depends(require_auth)):
+    from Backend import db
+    if getattr(db, "global_db", None):
+        await db.global_db["catalogs"].delete_one({"_id": cat_id})
+    return {"status": "success"}
+
+@app.delete("/api/admin/global/files/{file_id}")
+async def delete_global_file(file_id: str, _: bool = Depends(require_auth)):
+    from Backend import db
+    if getattr(db, "global_db", None):
+        await db.global_db["files"].delete_one({"_id": file_id})
+    return {"status": "success"}
+
+@app.delete("/api/admin/global/files")
+async def delete_all_global_files(_: bool = Depends(require_auth)):
+    from Backend import db
+    if getattr(db, "global_db", None):
+        await db.global_db["files"].delete_many({})
+        await db.global_db["meta"].delete_many({})
+    return {"status": "success"}
+
+@app.post("/api/admin/global/index/start")
+async def start_global_index(_: bool = Depends(require_auth)):
+    from Backend.helper.global_indexer import run_global_indexer, _INDEXER_RUNNING
+    if _INDEXER_RUNNING:
+        return {"status": "error", "message": "Already running"}
+    from Backend import db
+    import asyncio
+    asyncio.create_task(run_global_indexer(db))
+    return {"status": "success"}
+
+@app.get("/api/admin/global/index/status")
+async def status_global_index(_: bool = Depends(require_auth)):
+    from Backend.helper.global_indexer import _INDEXER_RUNNING
+    return {"running": _INDEXER_RUNNING}
+

@@ -564,7 +564,7 @@
 
 
 
-<!-- ── Global Search (Userbot) ────────────────────────────────────── -->
+<!-- ── Global Search ────────────────────────────────────── -->
 <div class="settings-card">
     <h2><i class="fa-solid fa-globe"></i> Global Search</h2>
 
@@ -577,9 +577,7 @@
         <span class="toggle-label">
             <strong>Enable Global Search</strong>
             <span style="color:var(--text-sec);font-size:0.8rem;display:block">
-                Search media <strong>only in the channels listed below</strong>.
-                Results are tagged <strong>🌐 GLOBAL</strong> in the stream list
-                for items not in your local catalog.
+                Search media in external channels. Uses live Telegram userbot scraping or a dedicated MongoDB cluster.
             </span>
         </span>
     </label>
@@ -587,14 +585,22 @@
     {% if not userbot_configured %}
     <p style="color:var(--text-sec);font-size:0.8rem;margin-top:0.75rem">
         <i class="fa-solid fa-circle-info"></i>
-        Requires <code>USER_SESSION_STRING</code> to be set in
-        <code>config.env</code> (startup-critical, not editable here)
-        <strong>and a full app restart</strong>.
+        Requires <code>USER_SESSION_STRING</code> to be set in <code>config.env</code> (startup-critical).
         Restart the app after setting it to unlock this option.
     </p>
     {% endif %}
 
     <div id="global-search-fields"
+         style="{% if not settings.global_search %}display:none{% endif %}">
+
+        <hr class="divider">
+
+        <div style="margin-bottom:1.5rem">
+            <label class="s-label" for="global_database_uri">GLOBAL DATABASE URI <span class="hint">(Optional)</span></label>
+            <p class="hint">Use a dedicated MongoDB cluster for instantaneous global search and Global Catalogs on the Stremio homepage.</p>
+            <input type="password" id="global_database_uri" class="s-input" placeholder="mongodb+srv://..."
+                   value="{{ settings.global_database_uri or '' }}">
+        </div>
          style="{% if not settings.global_search %}display:none{% endif %}">
 
         <hr class="divider">
@@ -1138,6 +1144,7 @@ async function saveSettings() {
         multi_tokens:                  collectList('multi_tokens'),
         extra_databases:               collectList('extra_databases'),
         global_search:                 document.getElementById('global_search').checked,
+        global_database_uri:           document.getElementById('global_database_uri').value.trim(),
         global_search_channels:        collectList('global_search_channels'),
         manual_channels:               collectList('manual_channels'),
         announce_new_content:          document.getElementById('announce_new_content').checked,
@@ -1248,6 +1255,7 @@ function renderSettings(s) {
     document.getElementById('subscription').checked = !!s.subscription;
     document.getElementById('show_proxy_and_non_proxy_both').checked = !!s.show_proxy_and_non_proxy_both;
     document.getElementById('global_search').checked = !!s.global_search;
+    if (document.getElementById('global_database_uri')) document.getElementById('global_database_uri').value = s.global_database_uri || '';
     document.getElementById('announce_new_content').checked = !!s.announce_new_content;
     document.getElementById('delete_on_metadata_fail').checked = !!s.delete_on_metadata_fail;
     toggleSubFields();

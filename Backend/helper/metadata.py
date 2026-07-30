@@ -71,23 +71,37 @@ _tmdb_client_key: str | None = None
 
 
 #----- ── TMDb client & image helpers ─────────────────────────────────────────────
+import random
+
+_tmdb_clients = []
+_tmdb_client_keys_hash = ""
+
 def tmdb_api_key() -> str:
     try:
-        key = SettingsManager.current().tmdb_api
-        if key:
-            return key
+        keys = SettingsManager.current().tmdb_api
+        if keys:
+            return keys
     except Exception:
         pass
     return getattr(Telegram, "TMDB_API", "") or ""
 
-
-def get_tmdb_client() -> aioTMDb:
-    global _tmdb_client, _tmdb_client_key
-    current_key = tmdb_api_key()
-    if _tmdb_client is None or _tmdb_client_key != current_key:
-        _tmdb_client = aioTMDb(key=current_key, language="en-US", region="US")
-        _tmdb_client_key = current_key
-    return _tmdb_client
+def get_tmdb_client():
+    global _tmdb_clients, _tmdb_client_keys_hash
+    current_keys_raw = tmdb_api_key()
+    
+    # Rebuild the clients list only if the comma-separated string of keys changes
+    if not _tmdb_clients or _tmdb_client_keys_hash != current_keys_raw:
+        _tmdb_clients = []
+        _tmdb_client_keys_hash = current_keys_raw
+        key_list = [k.strip() for k in current_keys_raw.split(",") if k.strip()]
+        for k in key_list:
+            _tmdb_clients.append(aioTMDb(key=k, language="en-US", region="US"))
+            
+    if not _tmdb_clients:
+        # Fallback if no keys provided, though it will likely fail
+        return aioTMDb(key="", language="en-US", region="US")
+        
+    return random.choice(_tmdb_clients)
 
 
 def format_tmdb_image(path: str, size="w500") -> str:
