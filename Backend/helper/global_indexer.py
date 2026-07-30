@@ -55,6 +55,20 @@ def determine_catalog(parsed: dict, details, media_type: str, filename: str) -> 
         
     return "other_movies" if media_type == "movie" else "other_series"
 
+async def log_unindexed(db, file_id, filename, size, chat_id, message_id, reason, title=None, year=None):
+    doc = {
+        "_id": file_id,
+        "filename": filename,
+        "size": size,
+        "size_str": get_readable_file_size(size),
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "reason": reason,
+        "parsed_title": title or "",
+        "parsed_year": year or ""
+    }
+    await db.global_db["unindexed"].update_one({"_id": file_id}, {"$set": doc}, upsert=True)
+
 async def run_global_indexer(db):
     global _INDEXER_RUNNING
     if _INDEXER_RUNNING:
@@ -90,7 +104,7 @@ async def run_global_indexer(db):
                     
                     async for message in Userbot.search_messages(chat_id, filter=msg_filter):
                         if message.id <= last_id:
-                            break # Reached previously scanned messages!
+                            break # Reached previously scanned messages
                             
                         max_id_seen = max(max_id_seen, message.id)
                         
@@ -99,16 +113,20 @@ async def run_global_indexer(db):
                         
                         media = getattr(message, "video", None) or getattr(message, "document", None)
                         size = getattr(media, "file_size", 0) or 0
+                        file_id = f"{chat_id}_{message.id}"
                         
                         try:
                             parsed = PTN.parse(filename)
                         except:
+                            await log_unindexed(db, file_id, filename, size, chat_id, message.id, "PTN Parsing Failed")
                             continue
                             
                         title = parsed.get("title")
                         year = parsed.get("year")
                         
-                        if not title: continue
+                        if not title: 
+                            await log_unindexed(db, file_id, filename, size, chat_id, message.id, "No Title Found", title, year)
+                            continue
                         
                         # 1. Search TMDB
                         media_type = "series" if parsed.get("season") or parse_combined_episodes(filename) else "movie"
@@ -118,12 +136,16 @@ async def run_global_indexer(db):
                         if not tmdb_res:
                             tmdb_res = await safe_tmdb_search(title, tmdb_type, None)
                             
-                        if not tmdb_res: continue
+                        if not tmdb_res:
+                            await log_unindexed(db, file_id, filename, size, chat_id, message.id, "TMDb Match Failed", title, year)
+                            continue
                         
                         # 2. Get Details
                         tmdb_id = tmdb_res.id
                         details = await _tmdb_details(tmdb_type, tmdb_id)
-                        if not details: continue
+                        if not details: 
+                            await log_unindexed(db, file_id, filename, size, chat_id, message.id, "TMDb Details Failed", title, year)
+                            continue
                         
                         # 3. Categorize
                         catalog = determine_catalog(parsed, details, media_type, filename)
@@ -153,7 +175,6 @@ async def run_global_indexer(db):
                             upsert=True
                         )
                         
-                        file_id = f"{chat_id}_{message.id}"
                         combined = parse_combined_episodes(filename)
                         
                         file_data = {
@@ -175,6 +196,9 @@ async def run_global_indexer(db):
                             {"$set": file_data},
                             upsert=True
                         )
+                        # Remove from unindexed if it was previously there
+                        await db.global_db["unindexed"].delete_one({"_id": file_id})
+                        
                         count += 1
                         
                     # Save checkpoint

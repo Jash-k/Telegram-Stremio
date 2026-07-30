@@ -554,6 +554,45 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
     imdb_id = id
 
     media = await db.get_media_details(imdb_id=imdb_id)
+    
+    # Check Global DB if not in Local DB
+    if not media and getattr(db, "global_db", None) is not None:
+        g_meta = await db.global_db["meta"].find_one({"_id": imdb_id})
+        if g_meta:
+            meta_obj = {
+                "id": imdb_id,
+                "type": g_meta.get("media_type", media_type),
+                "name": g_meta.get("title", ""),
+                "description": g_meta.get("description", ""),
+                "year": str(g_meta.get("year", "")),
+                "poster": g_meta.get("poster"),
+                "background": g_meta.get("background"),
+                "genres": g_meta.get("genres", [])
+            }
+            if meta_obj["type"] == "series":
+                files_cursor = db.global_db["files"].find({"meta_id": imdb_id})
+                videos = []
+                seen_eps = set()
+                async for fdoc in files_cursor:
+                    s_num = fdoc.get("season")
+                    e_start = fdoc.get("episode_start")
+                    e_end = fdoc.get("episode_end")
+                    if s_num is not None and e_start is not None:
+                        e_end = e_end or e_start
+                        for ep in range(e_start, e_end + 1):
+                            ep_key = f"{s_num}_{ep}"
+                            if ep_key not in seen_eps:
+                                seen_eps.add(ep_key)
+                                videos.append({
+                                    "id": f"{imdb_id}:{s_num}:{ep}",
+                                    "title": f"Episode {ep}",
+                                    "season": s_num,
+                                    "episode": ep
+                                })
+                videos.sort(key=lambda x: (x["season"], x["episode"]))
+                meta_obj["videos"] = videos
+            return {"meta": meta_obj}
+
     if not media:
         return {"meta": {}}
 
