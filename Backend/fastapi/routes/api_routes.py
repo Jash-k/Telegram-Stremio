@@ -2640,15 +2640,3 @@ async def bot_admin_apply_status_api() -> dict:
     }
 
 
-@router.delete("/admin/global/files/{file_id}")
-async def delete_global_file(file_id: str, _: bool = Depends(require_auth)):
-    if db.global_db:
-        await db.global_db["files"].delete_one({"_id": file_id})
-    return {"status": "success"}
-
-@router.delete("/admin/global/files")
-async def delete_all_global_files(_: bool = Depends(require_auth)):
-    if db.global_db:
-        await db.global_db["files"].delete_many({})
-        await db.global_db["meta"].delete_many({})
-    return {"status": "success"}
