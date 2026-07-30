@@ -957,7 +957,7 @@ async def get_global_channels(_: bool = Depends(require_auth)):
     return {"channels": channels}
 
 @app.get("/api/admin/global/channels/{chat_id}/files")
-async def get_channel_files(chat_id: int, filter: str = "indexed", page: int = 1, _: bool = Depends(require_auth)):
+async def get_channel_files(chat_id: int, filter: str = "indexed", page: int = 1, search: str = "", _: bool = Depends(require_auth)):
     from Backend import db
     if getattr(db, "global_db", None) is None: return {"items": [], "total_pages": 1}
     
@@ -966,9 +966,13 @@ async def get_channel_files(chat_id: int, filter: str = "indexed", page: int = 1
     items = []
     total = 0
     
+    query = {"chat_id": chat_id}
+    if search:
+        query["filename"] = {"$regex": search, "$options": "i"}
+    
     if filter == "indexed":
-        total = await db.global_db["files"].count_documents({"chat_id": chat_id})
-        cursor = db.global_db["files"].find({"chat_id": chat_id}).sort("_id", -1).skip(skip).limit(page_size)
+        total = await db.global_db["files"].count_documents(query)
+        cursor = db.global_db["files"].find(query).sort("_id", -1).skip(skip).limit(page_size)
         docs = [d async for d in cursor]
         
         meta_ids = list(set([d.get("meta_id") for d in docs if d.get("meta_id")]))
@@ -986,8 +990,8 @@ async def get_channel_files(chat_id: int, filter: str = "indexed", page: int = 1
                 "tmdb_id": m.get("tmdb_id", "")
             })
     else:
-        total = await db.global_db["unindexed"].count_documents({"chat_id": chat_id})
-        cursor = db.global_db["unindexed"].find({"chat_id": chat_id}).sort("_id", -1).skip(skip).limit(page_size)
+        total = await db.global_db["unindexed"].count_documents(query)
+        cursor = db.global_db["unindexed"].find(query).sort("_id", -1).skip(skip).limit(page_size)
         docs = [d async for d in cursor]
         for d in docs:
             items.append({
