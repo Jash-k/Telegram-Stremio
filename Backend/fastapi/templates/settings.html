@@ -337,10 +337,10 @@
         <h2><i class="fa-solid fa-film"></i> Media &amp; Content</h2>
         <div class="grid-2">
             <div>
-                <label class="s-label" for="tmdb_api">TMDB API Key</label>
+                <label class="s-label" for="tmdb_api">TMDB API Keys <span class="hint">(Comma separated)</span></label>
                 <input type="text" id="tmdb_api" class="s-input"
                     value="{{ settings.tmdb_api }}" autocomplete="off"
-                    placeholder="Your TMDB v3 API key" spellcheck="false">
+                    placeholder="key1, key2, key3..." spellcheck="false">
             </div>
             <div>
                 <label class="s-label" for="base_url">Base URL</label>
@@ -601,7 +601,6 @@
             <input type="password" id="global_database_uri" class="s-input" placeholder="mongodb+srv://..."
                    value="{{ settings.global_database_uri or '' }}">
         </div>
-         style="{% if not settings.global_search %}display:none{% endif %}">
 
         <hr class="divider">
 
