@@ -716,18 +716,22 @@ async def auth_exception_handler(request: Request, exc):
 @app.get("/api/admin/global/stats")
 async def global_stats(_: bool = Depends(require_auth)):
     from Backend import db
-    if getattr(db, "global_db", None) is None:
-        return {"files_count": 0, "catalogs": [], "recent_files": []}
-    files_count = await db.global_db["files"].count_documents({})
-    cats_cursor = db.global_db["catalogs"].find()
-    catalogs = [c async for c in cats_cursor]
-    files_cursor = db.global_db["files"].find().sort("_id", -1).limit(50)
-    files = [f async for f in files_cursor]
-    return {
-        "files_count": files_count,
-        "catalogs": catalogs,
-        "recent_files": files
-    }
+    try:
+        if getattr(db, "global_db", None) is None:
+            return {"files_count": 0, "catalogs": [], "recent_files": []}
+        files_count = await db.global_db["files"].count_documents({})
+        cats_cursor = db.global_db["catalogs"].find()
+        catalogs = [c async for c in cats_cursor]
+        files_cursor = db.global_db["files"].find().sort("_id", -1).limit(50)
+        files = [f async for f in files_cursor]
+        return {
+            "files_count": files_count,
+            "catalogs": catalogs,
+            "recent_files": files
+        }
+    except Exception as e:
+        # If the auth fails, return a 500 error gracefully
+        return {"files_count": "ERROR", "catalogs": [], "recent_files": []}
 
 @app.delete("/api/admin/global/catalogs/{cat_id}")
 async def delete_global_cat(cat_id: str, _: bool = Depends(require_auth)):

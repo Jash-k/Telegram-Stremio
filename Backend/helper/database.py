@@ -53,6 +53,14 @@ class Database:
             if global_uri:
                 try:
                     import motor.motor_asyncio
+                    
+                    # Ensure the URI is somewhat valid before attempting connection
+                    if not global_uri.startswith("mongodb://") and not global_uri.startswith("mongodb+srv://"):
+                        LOGGER.warning("Invalid GLOBAL_DATABASE_URI format. Skipping connection.")
+                        return None
+                        
+                    # We create the client, but PyMongo usually waits until the first query to actually authenticate.
+                    # We let it pass, but if the URI is completely broken/unauthenticated, operations will fail.
                     self._global_client = motor.motor_asyncio.AsyncIOMotorClient(global_uri)
                     self._global_db = self._global_client[self.db_name]
                     LOGGER.info("Connected to Dedicated Global Search Cluster!")
