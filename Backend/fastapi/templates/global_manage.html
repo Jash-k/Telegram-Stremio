@@ -195,16 +195,23 @@
     </div>
 </div>
 
-<!-- Unindexed View -->
+<!-- Unindexed Queue View -->
 <div id="view-unindexed" style="display:none;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
-        <h3 style="font-size:1.1rem; font-weight:600;">Unindexed Files (Missing Metadata)</h3>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; flex-wrap:wrap; gap:10px;">
+        <h3 style="font-size:1.1rem; font-weight:600;">Global Unindexed Queue</h3>
+        <div style="display:flex; gap:10px; align-items:center;">
+            <input type="text" id="unidx-search" class="s-input" placeholder="Search filenames..." style="padding: 0.4rem 0.8rem; font-size: 0.9rem;" onkeydown="if(event.key==='Enter'){unidxPage=1; loadUnindexedPage();}">
+            <button class="btn btn-ghost" onclick="unidxPage=1; loadUnindexedPage()" style="padding: 0.4rem 0.8rem; font-size: 0.9rem;"><i class="fa-solid fa-search"></i></button>
+            <button class="btn btn-primary" onclick="showBatchMapModal()" style="padding: 0.4rem 0.8rem; font-size: 0.9rem;"><i class="fa-solid fa-link"></i> Map Selected</button>
+            <button class="btn btn-danger" onclick="purgeUnindexed()" style="padding: 0.4rem 0.8rem; font-size: 0.9rem;"><i class="fa-solid fa-trash"></i> Purge All</button>
+        </div>
     </div>
     
     <div class="table-wrap">
         <table>
             <thead>
                 <tr>
+                    <th style="width:40px;"><input type="checkbox" id="unidx-select-all" onclick="toggleAllUnidx(this)"></th>
                     <th>Filename & Parsed Info</th>
                     <th>Failure Reason</th>
                     <th>Size</th>
@@ -218,7 +225,9 @@
     
     <div style="display:flex; justify-content:center; gap:1rem; align-items:center; margin-bottom:2rem;">
         <button class="btn btn-ghost" id="unidx-btn-prev" onclick="changeUnidxPage(-1)">Previous</button>
-        <span id="unidx-page-info" style="font-weight:bold;">Page 1</span>
+        <span style="font-weight:bold;">
+            Page <input type="number" id="unidx-page-input" value="1" min="1" class="s-input" style="width:60px; padding:0.2rem; text-align:center;" onkeydown="if(event.key==='Enter'){unidxPage=parseInt(this.value); loadUnindexedPage();}"> of <span id="unidx-total-pages">1</span>
+        </span>
         <button class="btn btn-ghost" id="unidx-btn-next" onclick="changeUnidxPage(1)">Next</button>
     </div>
 </div>
@@ -557,26 +566,53 @@ function changePage(delta) {
 
 /* --- Unindexed View --- */
 
+function toggleAllUnidx(source) {
+    const checkboxes = document.querySelectorAll('.unidx-cb');
+    checkboxes.forEach(cb => cb.checked = source.checked);
+}
+
+async function purgeUnindexed() {
+    if (!confirm('Are you sure you want to completely purge ALL unindexed files from the queue?')) return;
+    await fetch(`/api/admin/global/unindexed`, { method: 'DELETE' });
+    unidxPage = 1;
+    await loadUnindexedPage();
+    loadUnindexedBadge();
+}
+
+let isBatchMap = false;
+function showBatchMapModal() {
+    const checkboxes = document.querySelectorAll('.unidx-cb:checked');
+    if (checkboxes.length === 0) return alert("Select at least one file to map.");
+    isBatchMap = true;
+    mappingFileId = Array.from(checkboxes).map(cb => cb.value);
+    document.getElementById('map-filename').textContent = `Batch Mapping ${checkboxes.length} file(s) - episodes will be auto-extracted.`;
+    document.getElementById('map-modal').style.display = 'flex';
+}
+
 async function loadUnindexedPage() {
+    const search = document.getElementById('unidx-search') ? document.getElementById('unidx-search').value.trim() : "";
+    if (document.getElementById('unidx-select-all')) document.getElementById('unidx-select-all').checked = false;
     const list = document.getElementById('unidx-list');
-    list.innerHTML = '<tr><td colspan="4" style="text-align:center;"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
+    list.innerHTML = '<tr><td colspan="5" style="text-align:center;"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
     
     try {
-        const res = await fetch(`/api/admin/global/unindexed?page=${unidxPage}`);
+        const res = await fetch(`/api/admin/global/unindexed?page=${unidxPage}&search=${encodeURIComponent(search)}`);
         const data = await res.json();
         
         unidxTotalPages = data.total_pages;
-        document.getElementById('unidx-page-info').textContent = `Page ${unidxPage} of ${unidxTotalPages}`;
-        document.getElementById('unidx-btn-prev').disabled = unidxPage <= 1;
-        document.getElementById('unidx-btn-next').disabled = unidxPage >= unidxTotalPages;
+        if (document.getElementById('unidx-total-pages')) document.getElementById('unidx-total-pages').textContent = unidxTotalPages;
+        if (document.getElementById('unidx-page-input')) document.getElementById('unidx-page-input').value = unidxPage;
+        if (document.getElementById('unidx-btn-prev')) document.getElementById('unidx-btn-prev').disabled = unidxPage <= 1;
+        if (document.getElementById('unidx-btn-next')) document.getElementById('unidx-btn-next').disabled = unidxPage >= unidxTotalPages;
         
         list.innerHTML = '';
         if (data.items.length === 0) {
-            list.innerHTML = '<tr><td colspan="4" style="text-align:center;">No unindexed files.</td></tr>';
+            list.innerHTML = '<tr><td colspan="5" style="text-align:center;">No unindexed files.</td></tr>';
         } else {
             data.items.forEach(item => {
                 const escFilename = escapeHtml(item.filename);
                 list.innerHTML += `<tr>
+                    <td><input type="checkbox" class="unidx-cb" value="${item._id}"></td>
                     <td>
                         <div style="font-weight:600; font-size:0.9rem; word-break: break-all;">${escFilename}</div>
                         <div style="color:var(--text-sec); font-size:0.75rem;">Parsed: ${escapeHtml(item.parsed_title) || '?'} (${item.parsed_year || '?'})</div>
@@ -585,7 +621,7 @@ async function loadUnindexedPage() {
                     <td>${item.size_str || '0 MB'}</td>
                     <td style="white-space:nowrap;">
                         <button class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="showMapModal('${item._id}', this.getAttribute('data-filename'))" data-filename="${escFilename}">Link TMDB</button>
-                        <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteGlobalFile('${item._id}')"><i class="fa-solid fa-trash"></i></button>
+                        <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteUnindexed('${item._id}')"><i class="fa-solid fa-trash"></i></button>
                     </td>
                 </tr>`;
             });
@@ -615,17 +651,27 @@ function hideMapModal() {
 async function submitMap() {
     const tmdb_id = document.getElementById('map-tmdb-id').value.trim();
     const media_type = document.getElementById('map-media-type').value;
-    if (!tmdb_id) return alert("Enter a TMDB ID");
+    if (!tmdb_id) return alert("Enter a TMDB ID or Link");
     
     const btn = document.getElementById('btn-submit-map');
     btn.disabled = true;
     btn.textContent = 'Mapping...';
     
-    const res = await fetch(`/api/admin/global/files/${mappingFileId}/map`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ tmdb_id, media_type })
-    });
+    let res;
+    if (isBatchMap) {
+        res = await fetch(`/api/admin/global/files/batch_map`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ file_ids: mappingFileId, tmdb_id: tmdb_id, media_type: media_type })
+        });
+    } else {
+        res = await fetch(`/api/admin/global/files/batch_map`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ file_ids: [mappingFileId], tmdb_id: tmdb_id, media_type: media_type })
+        });
+    }
+    
     const data = await res.json();
     btn.disabled = false;
     btn.textContent = 'Link Metadata';
