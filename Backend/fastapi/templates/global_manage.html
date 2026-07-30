@@ -59,12 +59,6 @@
     </div>
 </div>
 
-
-<div style="display:flex; gap:10px; margin-bottom:1.5rem;">
-    <button id="tab-dash" class="btn btn-primary" onclick="openDashboard()"><i class="fa-solid fa-chart-line"></i> Dashboard</button>
-    <button id="tab-unidx" class="btn btn-ghost" onclick="openUnindexedView()"><i class="fa-solid fa-triangle-exclamation"></i> Unindexed Files <span id="unindexed-badge" class="badge" style="display:none; background:#ef4444; color:white; margin-left:5px;">0</span></button>
-</div>
-
 <div id="view-dashboard">
     <div class="table-wrap">
         <table>
@@ -133,61 +127,6 @@
     </div>
 </div>
 
-
-<div id="view-unindexed" style="display:none;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
-        <h3 style="font-size:1.1rem; font-weight:600;">Unindexed Files (Missing Metadata)</h3>
-    </div>
-    
-    <div class="table-wrap">
-        <table>
-            <thead>
-                <tr>
-                    <th>Filename & Parsed Info</th>
-                    <th>Failure Reason</th>
-                    <th>Size</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody id="unidx-list">
-            </tbody>
-        </table>
-    </div>
-    
-    <div style="display:flex; justify-content:center; gap:1rem; align-items:center; margin-bottom:2rem;">
-        <button class="btn btn-ghost" id="unidx-btn-prev" onclick="changeUnidxPage(-1)">Previous</button>
-        <span id="unidx-page-info" style="font-weight:bold;">Page 1</span>
-        <button class="btn btn-ghost" id="unidx-btn-next" onclick="changeUnidxPage(1)">Next</button>
-    </div>
-</div>
-
-<!-- Modal for Mapping -->
-<div id="map-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(5px); z-index:9999; align-items:center; justify-content:center;">
-    <div class="settings-card" style="width:100%; max-width:500px; margin:20px;">
-        <h3 style="margin-bottom:10px; font-weight:bold;">Manual TMDB Mapping</h3>
-        <p style="font-size:0.85rem; color:var(--text-sec); margin-bottom:15px; word-break:break-all;" id="map-filename"></p>
-        
-        <div style="margin-bottom:15px;">
-            <label class="s-label">TMDB ID</label>
-            <input type="number" id="map-tmdb-id" class="s-input" placeholder="e.g. 12345">
-            <p style="font-size:0.75rem; color:var(--text-sec); margin-top:5px;">Find the ID from the TMDB website URL (e.g. themoviedb.org/movie/12345).</p>
-        </div>
-        
-        <div style="margin-bottom:20px;">
-            <label class="s-label">Media Type</label>
-            <select id="map-media-type" class="s-input">
-                <option value="movie">Movie</option>
-                <option value="series">TV Show</option>
-            </select>
-        </div>
-        
-        <div style="display:flex; gap:10px; justify-content:flex-end;">
-            <button class="btn btn-ghost" onclick="hideMapModal()">Cancel</button>
-            <button class="btn btn-primary" id="btn-submit-map" onclick="submitMap()">Link Metadata</button>
-        </div>
-    </div>
-</div>
-
 <script>
 let currentCatalog = null;
 let currentPage = 1;
@@ -227,7 +166,6 @@ async function loadData() {
         
         document.getElementById('stat-files').textContent = data.files_count || 0;
         document.getElementById('stat-catalogs').textContent = (data.catalogs || []).length;
-        await loadUnindexedBadge();
         
         const catList = document.getElementById('catalog-list');
         catList.innerHTML = '';
@@ -265,128 +203,6 @@ async function loadData() {
     } catch (e) {
         console.error(e);
     }
-}
-
-
-async function loadUnindexedBadge() {
-    try {
-        const res = await fetch('/api/admin/global/unindexed?page=1');
-        const data = await res.json();
-        const unCount = data.total_items || 0;
-        const badge = document.getElementById('unindexed-badge');
-        if (badge) {
-            badge.textContent = unCount;
-            badge.style.display = unCount > 0 ? 'inline-flex' : 'none';
-        }
-    } catch(e) {}
-}
-
-async function openUnindexedView() {
-    document.getElementById('view-dashboard').style.display = 'none';
-    document.getElementById('view-catalog').style.display = 'none';
-    document.getElementById('view-unindexed').style.display = 'block';
-    
-    document.getElementById('tab-dash').classList.replace('btn-primary', 'btn-ghost');
-    document.getElementById('tab-unidx').classList.replace('btn-ghost', 'btn-primary');
-    
-    currentPage = 1;
-    await loadUnindexedPage();
-}
-
-function openDashboard() {
-    document.getElementById('view-unindexed').style.display = 'none';
-    document.getElementById('view-catalog').style.display = 'none';
-    document.getElementById('view-dashboard').style.display = 'block';
-    
-    document.getElementById('tab-unidx').classList.replace('btn-primary', 'btn-ghost');
-    document.getElementById('tab-dash').classList.replace('btn-ghost', 'btn-primary');
-    
-    loadData();
-}
-
-let mappingFileId = null;
-function showMapModal(fileId, filename) {
-    mappingFileId = fileId;
-    document.getElementById('map-filename').textContent = filename;
-    document.getElementById('map-modal').style.display = 'flex';
-}
-function hideMapModal() {
-    document.getElementById('map-modal').style.display = 'none';
-    mappingFileId = null;
-}
-async function submitMap() {
-    const tmdb_id = document.getElementById('map-tmdb-id').value.trim();
-    const media_type = document.getElementById('map-media-type').value;
-    if (!tmdb_id) return alert("Enter a TMDB ID");
-    
-    const btn = document.getElementById('btn-submit-map');
-    btn.disabled = true;
-    btn.textContent = 'Mapping...';
-    
-    const res = await fetch(`/api/admin/global/unindexed/${mappingFileId}/map`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ tmdb_id, media_type })
-    });
-    const data = await res.json();
-    btn.disabled = false;
-    btn.textContent = 'Link Metadata';
-    
-    if (data.status === 'success') {
-        hideMapModal();
-        loadUnindexedPage();
-    } else {
-        alert("Error: " + data.message);
-    }
-}
-
-async function loadUnindexedPage() {
-    const list = document.getElementById('unidx-list');
-    list.innerHTML = '<tr><td colspan="4" style="text-align:center;"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
-    
-    try {
-        const res = await fetch(`/api/admin/global/unindexed?page=${currentPage}`);
-        const data = await res.json();
-        
-        totalPages = data.total_pages;
-        document.getElementById('unidx-page-info').textContent = `Page ${currentPage} of ${totalPages}`;
-        document.getElementById('unidx-btn-prev').disabled = currentPage <= 1;
-        document.getElementById('unidx-btn-next').disabled = currentPage >= totalPages;
-        
-        list.innerHTML = '';
-        if (data.items.length === 0) {
-            list.innerHTML = '<tr><td colspan="4" style="text-align:center;">No unindexed files.</td></tr>';
-        } else {
-            data.items.forEach(item => {
-                const escFilename = item.filename.replace(/'/g, "\'");
-                list.innerHTML += `<tr>
-                    <td>
-                        <div style="font-weight:600; font-size:0.9rem; word-break: break-all;">${item.filename}</div>
-                        <div style="color:var(--text-sec); font-size:0.75rem;">Parsed: ${item.parsed_title || '?'} (${item.parsed_year || '?'})</div>
-                    </td>
-                    <td><span class="badge" style="background:#ef444420;color:#ef4444;">${item.reason}</span></td>
-                    <td>${item.size_str || '0 MB'}</td>
-                    <td style="white-space:nowrap;">
-                        <button class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="showMapModal('${item._id}', '${escFilename}')">Link TMDB</button>
-                        <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteUnindexed('${item._id}')"><i class="fa-solid fa-trash"></i></button>
-                    </td>
-                </tr>`;
-            });
-        }
-    } catch (e) {
-        console.error(e);
-    }
-}
-
-function changeUnidxPage(delta) {
-    currentPage += delta;
-    loadUnindexedPage();
-}
-
-async function deleteUnindexed(id) {
-    if (!confirm('Remove this file from the unindexed queue?')) return;
-    await fetch(`/api/admin/global/unindexed/${id}`, { method: 'DELETE' });
-    await loadUnindexedPage();
 }
 
 async function openCatalogView(catId, catName) {
