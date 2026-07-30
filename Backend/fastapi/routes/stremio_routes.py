@@ -479,7 +479,7 @@ async def get_catalog(token: str, media_type: str, id: str, extra: Optional[str]
                 query["title"] = {"$regex": search_query, "$options": "i"}
                 
             start_skip = (page - 1) * PAGE_SIZE
-            cursor = db.global_db["meta"].find(query).skip(start_skip).limit(PAGE_SIZE)
+            cursor = db.global_db["meta"].find(query).sort([("updated_at", -1), ("_id", -1)]).skip(start_skip).limit(PAGE_SIZE)
             items = [doc async for doc in cursor]
             
             metas = []

@@ -166,7 +166,8 @@ async def run_global_indexer(db):
                             "description": details.overview,
                             "media_type": media_type,
                             "catalog": catalog,
-                            "genres": [g.name for g in (getattr(details, "genres", None) or [])]
+                            "genres": [g.name for g in (getattr(details, "genres", None) or [])],
+                            "updated_at": time.time()
                         }
                         
                         await db.global_db["meta"].update_one(

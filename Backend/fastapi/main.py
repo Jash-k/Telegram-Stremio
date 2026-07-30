@@ -752,7 +752,7 @@ async def get_global_catalog_files(catalog_id: str, page: int = 1, _: bool = Dep
         
         query = {"catalog": catalog_id}
         total = await db.global_db["meta"].count_documents(query)
-        cursor = db.global_db["meta"].find(query).sort("_id", -1).skip(skip).limit(page_size)
+        cursor = db.global_db["meta"].find(query).sort([("updated_at", -1), ("_id", -1)]).skip(skip).limit(page_size)
         items = [doc async for doc in cursor]
         
         # Fetch file counts for each meta
@@ -814,13 +814,16 @@ async def status_global_index(_: bool = Depends(require_auth)):
 
 
 @app.get("/api/admin/global/unindexed")
-async def get_unindexed(page: int = 1, _: bool = Depends(require_auth)):
+async def get_unindexed(page: int = 1, search: str = "", _: bool = Depends(require_auth)):
     from Backend import db
-    if getattr(db, "global_db", None) is None: return {"items": [], "total_pages": 1}
+    if getattr(db, "global_db", None) is None: return {"items": [], "total_pages": 1, "total_items": 0}
     page_size = 30
     skip = (page - 1) * page_size
-    total = await db.global_db["unindexed"].count_documents({})
-    cursor = db.global_db["unindexed"].find().sort("_id", -1).skip(skip).limit(page_size)
+    query = {}
+    if search:
+        query = {"filename": {"$regex": search, "$options": "i"}}
+    total = await db.global_db["unindexed"].count_documents(query)
+    cursor = db.global_db["unindexed"].find(query).sort("_id", -1).skip(skip).limit(page_size)
     items = [doc async for doc in cursor]
     return {
         "items": items,
@@ -893,7 +896,8 @@ async def map_any_file(file_id: str, payload: dict, _: bool = Depends(require_au
         "description": details.overview,
         "media_type": media_type,
         "catalog": catalog,
-        "genres": [g.name for g in (getattr(details, "genres", None) or [])]
+        "genres": [g.name for g in (getattr(details, "genres", None) or [])],
+        "updated_at": __import__("time").time()
     }
     await db.global_db["meta"].update_one({"_id": doc_id}, {"$set": update_data}, upsert=True)
     
@@ -999,3 +1003,120 @@ async def get_channel_files(chat_id: int, filter: str = "indexed", page: int = 1
         "total_pages": (total + page_size - 1) // page_size or 1,
         "total_items": total
     }
+
+@app.delete("/api/admin/global/unindexed")
+async def delete_all_unindexed(_: bool = Depends(require_auth)):
+    from Backend import db
+    if getattr(db, "global_db", None) is not None:
+        await db.global_db["unindexed"].delete_many({})
+    return {"status": "success"}
+
+@app.post("/api/admin/global/files/batch_map")
+async def map_batch_files(payload: dict, _: bool = Depends(require_auth)):
+    from Backend import db
+    if getattr(db, "global_db", None) is None: return {"status": "error"}
+    
+    file_ids = payload.get("file_ids", [])
+    input_id = str(payload.get("tmdb_id", "")).strip()
+    media_type = payload.get("media_type")
+    
+    if not file_ids or not input_id or not media_type:
+        return {"status": "error", "message": "Missing info"}
+        
+    tmdb_type = "tv" if media_type == "series" else "movie"
+    from Backend.helper.metadata import _tmdb_details, format_tmdb_image, get_tmdb_client
+    
+    # Resolve IMDb/TMDB input to strict TMDB ID
+    tmdb_id = None
+    if input_id.startswith("tt") or "imdb.com/title/tt" in input_id:
+        import re
+        m = re.search(r"(tt\d+)", input_id)
+        if m:
+            imdb_str = m.group(1)
+            try:
+                client = get_tmdb_client()
+                find_res = await client.find(imdb_str, external_source="imdb_id")
+                if media_type == "movie" and find_res.movie_results:
+                    tmdb_id = find_res.movie_results[0].id
+                elif media_type == "series" and find_res.tv_results:
+                    tmdb_id = find_res.tv_results[0].id
+            except Exception:
+                pass
+    elif "themoviedb.org" in input_id:
+        import re
+        m = re.search(r"/(?:movie|tv)/(\d+)", input_id)
+        if m:
+            tmdb_id = int(m.group(1))
+    else:
+        try:
+            tmdb_id = int(input_id.replace("tmdb:", ""))
+        except:
+            pass
+
+    if not tmdb_id:
+        return {"status": "error", "message": "Could not resolve TMDB ID from input"}
+
+    details = await _tmdb_details(tmdb_type, tmdb_id)
+    if not details: return {"status": "error", "message": "Invalid TMDB ID"}
+    
+    from Backend.helper.global_indexer import determine_catalog
+    from Backend.helper.split_files import parse_combined_episodes
+    import PTN
+    
+    success_count = 0
+    
+    doc_id = f"tmdb:{tmdb_id}"
+    year_val = getattr(details, "release_date", None) or getattr(details, "first_air_date", "")
+    year_str = str(year_val) if year_val else ""
+    
+    for file_id in file_ids:
+        is_unindexed = True
+        file_doc = await db.global_db["unindexed"].find_one({"_id": file_id})
+        if not file_doc:
+            file_doc = await db.global_db["files"].find_one({"_id": file_id})
+            is_unindexed = False
+        
+        if not file_doc:
+            continue
+            
+        filename = file_doc["filename"]
+        try:
+            parsed = PTN.parse(filename)
+        except:
+            parsed = {}
+        
+        catalog = determine_catalog(parsed, details, media_type, filename)
+        update_data = {
+            "tmdb_id": tmdb_id,
+            "imdb_id": doc_id,
+            "title": getattr(details, "title", None) or getattr(details, "name", ""),
+            "year": year_str,
+            "poster": format_tmdb_image(details.poster_path),
+            "background": format_tmdb_image(details.backdrop_path, "original"),
+            "description": details.overview,
+            "media_type": media_type,
+            "catalog": catalog,
+            "genres": [g.name for g in (getattr(details, "genres", None) or [])]
+        }
+        await db.global_db["meta"].update_one({"_id": doc_id}, {"$set": update_data}, upsert=True)
+        
+        combined = parse_combined_episodes(filename)
+        new_file_data = {
+            "_id": file_id,
+            "meta_id": doc_id,
+            "filename": filename,
+            "size": file_doc.get("size", 0),
+            "size_str": file_doc.get("size_str", ""),
+            "quality": parsed.get("resolution", "HD"),
+            "chat_id": file_doc["chat_id"],
+            "message_id": file_doc["message_id"],
+            "season": combined["season"] if combined else parsed.get("season"),
+            "episode_start": combined["start"] if combined else parsed.get("episode"),
+            "episode_end": combined["end"] if combined else parsed.get("episode")
+        }
+        await db.global_db["files"].update_one({"_id": file_id}, {"$set": new_file_data}, upsert=True)
+        if is_unindexed:
+            await db.global_db["unindexed"].delete_one({"_id": file_id})
+        success_count += 1
+            
+    return {"status": "success", "count": success_count}
