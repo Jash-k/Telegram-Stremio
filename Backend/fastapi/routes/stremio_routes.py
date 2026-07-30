@@ -450,7 +450,7 @@ async def get_catalog(token: str, media_type: str, id: str, extra: Optional[str]
     try:
         if id.startswith("global_"):
             real_id = id.replace("global_", "")
-            if not getattr(db, "global_db", None):
+            if getattr(db, "global_db", None) is None:
                 return {"metas": []}
             
             # Find the catalog
@@ -639,7 +639,7 @@ async def _global_streams_for(token: str, imdb_id: str, media_type: str, season_
     try:
         # Check Global DB first!
         global_results = []
-        if getattr(db, "global_db", None):
+        if getattr(db, "global_db", None) is not None:
             query = {"meta_id": imdb_id}
             if season_num is not None:
                 query["season"] = season_num

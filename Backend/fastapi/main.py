@@ -716,7 +716,7 @@ async def auth_exception_handler(request: Request, exc):
 @app.get("/api/admin/global/stats")
 async def global_stats(_: bool = Depends(require_auth)):
     from Backend import db
-    if not getattr(db, "global_db", None):
+    if getattr(db, "global_db", None) is None:
         return {"files_count": 0, "catalogs": [], "recent_files": []}
     files_count = await db.global_db["files"].count_documents({})
     cats_cursor = db.global_db["catalogs"].find()
@@ -732,21 +732,21 @@ async def global_stats(_: bool = Depends(require_auth)):
 @app.delete("/api/admin/global/catalogs/{cat_id}")
 async def delete_global_cat(cat_id: str, _: bool = Depends(require_auth)):
     from Backend import db
-    if getattr(db, "global_db", None):
+    if getattr(db, "global_db", None) is not None:
         await db.global_db["catalogs"].delete_one({"_id": cat_id})
     return {"status": "success"}
 
 @app.delete("/api/admin/global/files/{file_id}")
 async def delete_global_file(file_id: str, _: bool = Depends(require_auth)):
     from Backend import db
-    if getattr(db, "global_db", None):
+    if getattr(db, "global_db", None) is not None:
         await db.global_db["files"].delete_one({"_id": file_id})
     return {"status": "success"}
 
 @app.delete("/api/admin/global/files")
 async def delete_all_global_files(_: bool = Depends(require_auth)):
     from Backend import db
-    if getattr(db, "global_db", None):
+    if getattr(db, "global_db", None) is not None:
         await db.global_db["files"].delete_many({})
         await db.global_db["meta"].delete_many({})
     return {"status": "success"}

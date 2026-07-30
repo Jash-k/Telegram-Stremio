@@ -13,7 +13,7 @@ from Backend.helper.metadata import _tmdb_details, safe_tmdb_search, format_tmdb
 _INDEXER_RUNNING = False
 
 async def get_or_create_global_catalogs(db):
-    if not db.global_db:
+    if db.global_db is None:
         return
         
     # Standard catalogs
@@ -60,7 +60,7 @@ async def run_global_indexer(db):
         LOGGER.info("[GLOBAL INDEXER] Already running.")
         return
         
-    if not db.global_db:
+    if db.global_db is None:
         LOGGER.info("[GLOBAL INDEXER] No Global DB configured. Skipping.")
         return
         
