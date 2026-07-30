@@ -124,11 +124,15 @@ async def run_global_indexer(db):
                         doc_id = f"tmdb:{tmdb_id}"
                         
                         # We store the item info
+                        # Ensure year is cast to string to prevent BSON encoding errors with datetime.date
+                        year_val = getattr(details, "release_date", None) or getattr(details, "first_air_date", "")
+                        year_str = str(year_val) if year_val else ""
+
                         update_data = {
                             "tmdb_id": tmdb_id,
                             "imdb_id": doc_id,
                             "title": getattr(details, "title", None) or getattr(details, "name", ""),
-                            "year": getattr(details, "release_date", None) or getattr(details, "first_air_date", ""),
+                            "year": year_str,
                             "poster": format_tmdb_image(details.poster_path),
                             "background": format_tmdb_image(details.backdrop_path, "original"),
                             "description": details.overview,
