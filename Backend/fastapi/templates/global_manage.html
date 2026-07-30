@@ -59,6 +59,12 @@
     </div>
 </div>
 
+<div style="display:flex; gap:10px; margin-bottom:1.5rem; overflow-x:auto;">
+    <button id="tab-dash" class="btn btn-primary" style="white-space:nowrap;" onclick="switchView('dashboard')"><i class="fa-solid fa-chart-line"></i> Dashboard</button>
+    <button id="tab-unidx" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('unindexed')"><i class="fa-solid fa-triangle-exclamation"></i> Unindexed Queue <span id="unindexed-badge" class="badge" style="display:none; background:#ef4444; color:white; margin-left:5px;">0</span></button>
+</div>
+
+<!-- Dashboard View (Catalogs & Channels) -->
 <div id="view-dashboard">
     <div class="table-wrap">
         <table>
@@ -76,32 +82,33 @@
         </table>
     </div>
 
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
-        <h3 style="font-size:1.1rem; font-weight:600;">Recent Indexed Files</h3>
-        <button onclick="clearAllFiles()" class="btn btn-danger"><i class="fa-solid fa-trash"></i> Purge All Files</button>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; margin-top:3rem;">
+        <h3 style="font-size:1.1rem; font-weight:600;">Telegram Channels</h3>
+        <button id="btn-wipe-rescan" onclick="wipeAndRescan()" class="btn btn-danger" style="background:#991b1b; border-color:#7f1d1d;"><i class="fa-solid fa-skull-crossbones"></i> Wipe & Rescan Database</button>
     </div>
 
     <div class="table-wrap">
         <table>
             <thead>
                 <tr>
-                    <th>Filename</th>
-                    <th>Size</th>
-                    <th>Catalog</th>
-                    <th>Actions</th>
+                    <th>Channel</th>
+                    <th>Total Files</th>
+                    <th>Indexed</th>
+                    <th>Unindexed (Failed)</th>
                 </tr>
             </thead>
-            <tbody id="file-list">
+            <tbody id="channels-list">
                 <tr><td colspan="4" style="text-align:center;">Loading...</td></tr>
             </tbody>
         </table>
     </div>
 </div>
 
+<!-- Catalog Drilldown View -->
 <div id="view-catalog" style="display:none;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
         <h3 style="font-size:1.1rem; font-weight:600;" id="cat-title">Catalog View</h3>
-        <button onclick="closeCatalogView()" class="btn btn-ghost"><i class="fa-solid fa-arrow-left"></i> Back</button>
+        <button onclick="switchView('dashboard')" class="btn btn-ghost"><i class="fa-solid fa-arrow-left"></i> Back</button>
     </div>
     
     <div class="table-wrap">
@@ -127,30 +134,174 @@
     </div>
 </div>
 
+<!-- Channel Files Drilldown View -->
+<div id="view-channel-files" style="display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+        <h3 style="font-size:1.1rem; font-weight:600;" id="channel-files-title">Channel Files</h3>
+        <button onclick="switchView('dashboard')" class="btn btn-ghost"><i class="fa-solid fa-arrow-left"></i> Back</button>
+    </div>
+    <div style="margin-bottom:1rem; display:flex; gap:10px;">
+        <button id="btn-filter-indexed" class="btn btn-primary" onclick="setChannelFilter('indexed')">Indexed</button>
+        <button id="btn-filter-unindexed" class="btn btn-ghost" onclick="setChannelFilter('unindexed')">Unindexed</button>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr><th>Filename</th><th>Size</th><th>Info</th><th>Actions</th></tr>
+            </thead>
+            <tbody id="channel-files-list">
+                <tr><td colspan="4" style="text-align:center;">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+    <div style="display:flex; justify-content:center; gap:1rem; align-items:center; margin-bottom:2rem;">
+        <button class="btn btn-ghost" id="cf-btn-prev" onclick="changeCfPage(-1)">Previous</button>
+        <span id="cf-page-info" style="font-weight:bold;">Page 1</span>
+        <button class="btn btn-ghost" id="cf-btn-next" onclick="changeCfPage(1)">Next</button>
+    </div>
+</div>
+
+<!-- Unindexed Queue View -->
+<div id="view-unindexed" style="display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+        <h3 style="font-size:1.1rem; font-weight:600;">Global Unindexed Queue</h3>
+    </div>
+    
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Filename & Parsed Info</th>
+                    <th>Failure Reason</th>
+                    <th>Size</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="unidx-list">
+            </tbody>
+        </table>
+    </div>
+    
+    <div style="display:flex; justify-content:center; gap:1rem; align-items:center; margin-bottom:2rem;">
+        <button class="btn btn-ghost" id="unidx-btn-prev" onclick="changeUnidxPage(-1)">Previous</button>
+        <span id="unidx-page-info" style="font-weight:bold;">Page 1</span>
+        <button class="btn btn-ghost" id="unidx-btn-next" onclick="changeUnidxPage(1)">Next</button>
+    </div>
+</div>
+
+<!-- Modal for Mapping -->
+<div id="map-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(5px); z-index:9999; align-items:center; justify-content:center;">
+    <div class="settings-card" style="width:100%; max-width:500px; margin:20px;">
+        <h3 style="margin-bottom:10px; font-weight:bold;">Manual TMDB Mapping</h3>
+        <p style="font-size:0.85rem; color:var(--text-sec); margin-bottom:15px; word-break:break-all;" id="map-filename"></p>
+        
+        <div style="margin-bottom:15px;">
+            <label class="s-label">TMDB ID</label>
+            <input type="number" id="map-tmdb-id" class="s-input" placeholder="e.g. 12345">
+            <p style="font-size:0.75rem; color:var(--text-sec); margin-top:5px;">Find the ID from the TMDB website URL (e.g. themoviedb.org/movie/12345).</p>
+        </div>
+        
+        <div style="margin-bottom:20px;">
+            <label class="s-label">Media Type</label>
+            <select id="map-media-type" class="s-input">
+                <option value="movie">Movie</option>
+                <option value="series">TV Show</option>
+            </select>
+        </div>
+        
+        <div style="display:flex; gap:10px; justify-content:flex-end;">
+            <button class="btn btn-ghost" onclick="hideMapModal()">Cancel</button>
+            <button class="btn btn-primary" id="btn-submit-map" onclick="submitMap()">Link Metadata</button>
+        </div>
+    </div>
+</div>
+
 <script>
+function escapeHtml(str) {
+    return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
 let currentCatalog = null;
 let currentPage = 1;
 let totalPages = 1;
+
+let cfChatId = null;
+let cfFilter = 'indexed';
+let cfPage = 1;
+let cfTotalPages = 1;
+
+let unidxPage = 1;
+let unidxTotalPages = 1;
+
+let currentActiveCallback = null;
+
+function switchView(viewName) {
+    document.getElementById('view-dashboard').style.display = 'none';
+    document.getElementById('view-channel-files').style.display = 'none';
+    document.getElementById('view-unindexed').style.display = 'none';
+    document.getElementById('view-catalog').style.display = 'none';
+    
+    document.getElementById('tab-dash').classList.replace('btn-primary', 'btn-ghost');
+    document.getElementById('tab-unidx').classList.replace('btn-primary', 'btn-ghost');
+    
+    document.getElementById(`view-${viewName}`).style.display = 'block';
+    
+    if (viewName === 'dashboard') {
+        document.getElementById('tab-dash').classList.replace('btn-ghost', 'btn-primary');
+        loadData();
+        currentActiveCallback = loadData;
+    } else if (viewName === 'unindexed') {
+        document.getElementById('tab-unidx').classList.replace('btn-ghost', 'btn-primary');
+        unidxPage = 1;
+        loadUnindexedPage();
+        currentActiveCallback = loadUnindexedPage;
+    }
+}
 
 async function checkIndexer() {
     try {
         const res = await fetch('/api/admin/global/index/status');
         const data = await res.json();
         const btn = document.getElementById('btn-index');
+        const wipeBtn = document.getElementById('btn-wipe-rescan');
         const lbl = document.getElementById('lbl-index-status');
         if (data.running) {
             btn.disabled = true;
+            if (wipeBtn) wipeBtn.disabled = true;
             btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Syncing...';
             lbl.textContent = "RUNNING IN BACKGROUND";
             lbl.style.color = "#22c55e";
             setTimeout(checkIndexer, 5000);
         } else {
             btn.disabled = false;
+            if (wipeBtn) wipeBtn.disabled = false;
             btn.innerHTML = '<i class="fa-solid fa-play"></i> Sync New Files';
             lbl.textContent = "IDLE";
             lbl.style.color = "var(--text-sec)";
         }
     } catch (e) {}
+}
+
+async function wipeAndRescan() {
+    if (!confirm('WARNING: This will completely WIPE your Global Database (all files, metadata, catalogs, and sync states) and start a fresh scan from scratch. Are you absolutely sure?')) return;
+    
+    const btn = document.getElementById('btn-wipe-rescan');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Wiping...'; }
+    
+    await fetch('/api/admin/global/wipe', { method: 'POST' });
+    await fetch('/api/admin/global/index/start', {method: 'POST'});
+    
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-skull-crossbones"></i> Wipe & Rescan'; }
+    
+    alert("Database completely wiped! A fresh background scan has been started.");
+    if(currentActiveCallback) currentActiveCallback();
+    loadUnindexedBadge();
+    checkIndexer();
 }
 
 async function startIndexer() {
@@ -166,7 +317,9 @@ async function loadData() {
         
         document.getElementById('stat-files').textContent = data.files_count || 0;
         document.getElementById('stat-catalogs').textContent = (data.catalogs || []).length;
+        loadUnindexedBadge();
         
+        // 1. Catalogs
         const catList = document.getElementById('catalog-list');
         catList.innerHTML = '';
         if (data.catalogs.length === 0) {
@@ -184,18 +337,97 @@ async function loadData() {
             });
         }
         
-        const fileList = document.getElementById('file-list');
-        fileList.innerHTML = '';
-        if (data.recent_files.length === 0) {
-            fileList.innerHTML = '<tr><td colspan="4" style="text-align:center;">No files found.</td></tr>';
+        // 2. Channels
+        const chList = document.getElementById('channels-list');
+        chList.innerHTML = '<tr><td colspan="4" style="text-align:center;"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
+        
+        const cRes = await fetch('/api/admin/global/channels');
+        const cData = await cRes.json();
+        
+        chList.innerHTML = '';
+        if(cData.channels.length === 0) {
+            chList.innerHTML = '<tr><td colspan="4" style="text-align:center;">No channels found.</td></tr>';
         } else {
-            data.recent_files.forEach(f => {
-                fileList.innerHTML += `<tr>
-                    <td><div style="max-width:300px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${f.filename}">${f.filename}</div></td>
-                    <td>${f.size_str || '0 MB'}</td>
-                    <td>${f.catalog || '-'}</td>
-                    <td>
-                        <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteFile('${f._id}')">Delete</button>
+            cData.channels.forEach(c => {
+                chList.innerHTML += `<tr>
+                    <td><strong>${escapeHtml(c.name)}</strong> <span style="font-size:0.8rem; color:var(--text-sec);"><br>${c.chat_id}</span></td>
+                    <td>${c.total}</td>
+                    <td><a href="#" onclick="openChannelFiles('${c.chat_id}', '${escapeHtml(c.name)}', 'indexed'); return false;" style="color:var(--primary); font-weight:bold; text-decoration:underline;">${c.indexed}</a></td>
+                    <td><a href="#" onclick="openChannelFiles('${c.chat_id}', '${escapeHtml(c.name)}', 'unindexed'); return false;" style="color:#ef4444; font-weight:bold; text-decoration:underline;">${c.unindexed}</a></td>
+                </tr>`;
+            });
+        }
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+async function loadUnindexedBadge() {
+    try {
+        const res = await fetch('/api/admin/global/unindexed?page=1');
+        const data = await res.json();
+        const unCount = data.total_items || 0;
+        const badge = document.getElementById('unindexed-badge');
+        if (badge) {
+            badge.textContent = unCount;
+            badge.style.display = unCount > 0 ? 'inline-flex' : 'none';
+        }
+    } catch(e) {}
+}
+
+/* --- Channels View --- */
+
+function openChannelFiles(chatId, chatName, filter) {
+    cfChatId = chatId;
+    cfPage = 1;
+    document.getElementById('channel-files-title').textContent = `${chatName} Files`;
+    switchView('channel-files');
+    setChannelFilter(filter);
+    currentActiveCallback = loadChannelFiles;
+}
+
+function setChannelFilter(filter) {
+    cfFilter = filter;
+    document.getElementById('btn-filter-indexed').classList.replace('btn-primary', 'btn-ghost');
+    document.getElementById('btn-filter-unindexed').classList.replace('btn-primary', 'btn-ghost');
+    document.getElementById(`btn-filter-${filter}`).classList.replace('btn-ghost', 'btn-primary');
+    cfPage = 1;
+    loadChannelFiles();
+}
+
+async function loadChannelFiles() {
+    const list = document.getElementById('channel-files-list');
+    list.innerHTML = '<tr><td colspan="4" style="text-align:center;"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
+    
+    try {
+        const res = await fetch(`/api/admin/global/channels/${cfChatId}/files?filter=${cfFilter}&page=${cfPage}`);
+        const data = await res.json();
+        
+        cfTotalPages = data.total_pages;
+        document.getElementById('cf-page-info').textContent = `Page ${cfPage} of ${cfTotalPages}`;
+        document.getElementById('cf-btn-prev').disabled = cfPage <= 1;
+        document.getElementById('cf-btn-next').disabled = cfPage >= cfTotalPages;
+        
+        list.innerHTML = '';
+        if (data.items.length === 0) {
+            list.innerHTML = '<tr><td colspan="4" style="text-align:center;">No files found.</td></tr>';
+        } else {
+            data.items.forEach(item => {
+                const escFilename = escapeHtml(item.filename);
+                let info = '';
+                if(item.status === 'indexed') {
+                    info = `<div style="color:var(--text-sec); font-size:0.8rem;">TMDB: ${item.tmdb_id}<br>${escapeHtml(item.meta_title)} (${item.meta_year})</div>`;
+                } else {
+                    info = `<span class="badge" style="background:#ef444420;color:#ef4444;">${item.reason}</span>`;
+                }
+                
+                list.innerHTML += `<tr>
+                    <td><div style="max-width:350px; word-break:break-all; font-size:0.9rem; font-weight:600;">${escFilename}</div></td>
+                    <td>${item.size_str || '0 MB'}</td>
+                    <td>${info}</td>
+                    <td style="white-space:nowrap;">
+                        <button class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="showMapModal('${item._id}', this.getAttribute('data-filename'))" data-filename="${escFilename}">Remap TMDB</button>
+                        <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteGlobalFile('${item._id}')"><i class="fa-solid fa-trash"></i></button>
                     </td>
                 </tr>`;
             });
@@ -205,6 +437,13 @@ async function loadData() {
     }
 }
 
+function changeCfPage(delta) {
+    cfPage += delta;
+    loadChannelFiles();
+}
+
+/* --- Catalog Drilldown View --- */
+
 async function openCatalogView(catId, catName) {
     currentCatalog = catId;
     currentPage = 1;
@@ -212,13 +451,7 @@ async function openCatalogView(catId, catName) {
     document.getElementById('view-catalog').style.display = 'block';
     document.getElementById('cat-title').textContent = `${catName} Items`;
     await loadCatalogPage();
-}
-
-function closeCatalogView() {
-    currentCatalog = null;
-    document.getElementById('view-catalog').style.display = 'none';
-    document.getElementById('view-dashboard').style.display = 'block';
-    loadData();
+    currentActiveCallback = loadCatalogPage;
 }
 
 async function loadCatalogPage() {
@@ -243,7 +476,7 @@ async function loadCatalogPage() {
                     <td>
                         <div style="display:flex; align-items:center; gap:10px;">
                             <img src="${item.poster || ''}" style="width:30px; height:45px; object-fit:cover; border-radius:4px; background:var(--surface);">
-                            <strong>${item.title}</strong>
+                            <strong>${escapeHtml(item.title)}</strong>
                         </div>
                     </td>
                     <td>${item.year || '-'}</td>
@@ -264,10 +497,94 @@ function changePage(delta) {
     loadCatalogPage();
 }
 
+/* --- Unindexed View --- */
+
+async function loadUnindexedPage() {
+    const list = document.getElementById('unidx-list');
+    list.innerHTML = '<tr><td colspan="4" style="text-align:center;"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
+    
+    try {
+        const res = await fetch(`/api/admin/global/unindexed?page=${unidxPage}`);
+        const data = await res.json();
+        
+        unidxTotalPages = data.total_pages;
+        document.getElementById('unidx-page-info').textContent = `Page ${unidxPage} of ${unidxTotalPages}`;
+        document.getElementById('unidx-btn-prev').disabled = unidxPage <= 1;
+        document.getElementById('unidx-btn-next').disabled = unidxPage >= unidxTotalPages;
+        
+        list.innerHTML = '';
+        if (data.items.length === 0) {
+            list.innerHTML = '<tr><td colspan="4" style="text-align:center;">No unindexed files.</td></tr>';
+        } else {
+            data.items.forEach(item => {
+                const escFilename = escapeHtml(item.filename);
+                list.innerHTML += `<tr>
+                    <td>
+                        <div style="font-weight:600; font-size:0.9rem; word-break: break-all;">${escFilename}</div>
+                        <div style="color:var(--text-sec); font-size:0.75rem;">Parsed: ${escapeHtml(item.parsed_title) || '?'} (${item.parsed_year || '?'})</div>
+                    </td>
+                    <td><span class="badge" style="background:#ef444420;color:#ef4444;">${item.reason}</span></td>
+                    <td>${item.size_str || '0 MB'}</td>
+                    <td style="white-space:nowrap;">
+                        <button class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="showMapModal('${item._id}', this.getAttribute('data-filename'))" data-filename="${escFilename}">Link TMDB</button>
+                        <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteUnindexed('${item._id}')"><i class="fa-solid fa-trash"></i></button>
+                    </td>
+                </tr>`;
+            });
+        }
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+function changeUnidxPage(delta) {
+    unidxPage += delta;
+    loadUnindexedPage();
+}
+
+/* --- Shared Actions --- */
+
+let mappingFileId = null;
+function showMapModal(fileId, filename) {
+    mappingFileId = fileId;
+    document.getElementById('map-filename').textContent = filename;
+    document.getElementById('map-modal').style.display = 'flex';
+}
+function hideMapModal() {
+    document.getElementById('map-modal').style.display = 'none';
+    mappingFileId = null;
+}
+async function submitMap() {
+    const tmdb_id = document.getElementById('map-tmdb-id').value.trim();
+    const media_type = document.getElementById('map-media-type').value;
+    if (!tmdb_id) return alert("Enter a TMDB ID");
+    
+    const btn = document.getElementById('btn-submit-map');
+    btn.disabled = true;
+    btn.textContent = 'Mapping...';
+    
+    const res = await fetch(`/api/admin/global/files/${mappingFileId}/map`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ tmdb_id, media_type })
+    });
+    const data = await res.json();
+    btn.disabled = false;
+    btn.textContent = 'Link Metadata';
+    
+    if (data.status === 'success') {
+        hideMapModal();
+        if(currentActiveCallback) currentActiveCallback();
+        loadUnindexedBadge();
+    } else {
+        alert("Error: " + data.message);
+    }
+}
+
 async function deleteMeta(id) {
     if (!confirm('Remove this movie/show and ALL its associated Telegram files from the Global Search DB?')) return;
     await fetch(`/api/admin/global/meta/${id}`, { method: 'DELETE' });
-    await loadCatalogPage();
+    if(currentActiveCallback) currentActiveCallback();
 }
 
 async function deleteCatalog(id) {
@@ -276,19 +593,20 @@ async function deleteCatalog(id) {
     loadData();
 }
 
-async function deleteFile(id) {
+async function deleteGlobalFile(id) {
     if (!confirm('Delete this file?')) return;
     await fetch(`/api/admin/global/files/${id}`, { method: 'DELETE' });
-    loadData();
+    if(currentActiveCallback) currentActiveCallback();
+    loadUnindexedBadge();
 }
 
-async function clearAllFiles() {
-    if (!confirm('Are you absolutely sure you want to delete ALL indexed files in the Global Search DB?')) return;
-    await fetch(`/api/admin/global/files`, { method: 'DELETE' });
-    loadData();
+async function deleteUnindexed(id) {
+    if (!confirm('Remove this file from the unindexed queue?')) return;
+    await fetch(`/api/admin/global/unindexed/${id}`, { method: 'DELETE' });
+    await loadUnindexedPage();
 }
 
-document.addEventListener("DOMContentLoaded", () => { loadData(); checkIndexer(); });
+document.addEventListener("DOMContentLoaded", () => { switchView('dashboard'); checkIndexer(); });
 </script>
 {% endif %}
 {% endblock %}

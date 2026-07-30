@@ -828,8 +828,27 @@ async def get_unindexed(page: int = 1, _: bool = Depends(require_auth)):
         "total_items": total
     }
 
-@app.post("/api/admin/global/unindexed/{file_id}/map")
-async def map_unindexed(file_id: str, payload: dict, _: bool = Depends(require_auth)):
+
+@app.delete("/api/admin/global/unindexed/{file_id}")
+async def delete_unindexed(file_id: str, _: bool = Depends(require_auth)):
+    from Backend import db
+    if getattr(db, "global_db", None) is not None:
+        await db.global_db["unindexed"].delete_one({"_id": file_id})
+    return {"status": "success"}
+
+@app.post("/api/admin/global/wipe")
+async def wipe_global_db(_: bool = Depends(require_auth)):
+    from Backend import db
+    if getattr(db, "global_db", None) is not None:
+        await db.global_db["files"].delete_many({})
+        await db.global_db["meta"].delete_many({})
+        await db.global_db["catalogs"].delete_many({})
+        await db.global_db["unindexed"].delete_many({})
+        await db.global_db["state"].delete_many({})
+    return {"status": "success"}
+
+@app.post("/api/admin/global/files/{file_id}/map")
+async def map_any_file(file_id: str, payload: dict, _: bool = Depends(require_auth)):
     from Backend import db
     if getattr(db, "global_db", None) is None: return {"status": "error"}
     
@@ -837,7 +856,12 @@ async def map_unindexed(file_id: str, payload: dict, _: bool = Depends(require_a
     media_type = payload.get("media_type")
     if not tmdb_id or not media_type: return {"status": "error", "message": "Missing info"}
     
+    is_unindexed = True
     file_doc = await db.global_db["unindexed"].find_one({"_id": file_id})
+    if not file_doc:
+        file_doc = await db.global_db["files"].find_one({"_id": file_id})
+        is_unindexed = False
+        
     if not file_doc: return {"status": "error", "message": "File not found"}
     
     filename = file_doc["filename"]
@@ -881,7 +905,7 @@ async def map_unindexed(file_id: str, payload: dict, _: bool = Depends(require_a
         "meta_id": doc_id,
         "filename": filename,
         "size": file_doc.get("size", 0),
-        "size_str": file_doc["size_str"],
+        "size_str": file_doc.get("size_str", ""),
         "quality": parsed.get("resolution", "HD"),
         "chat_id": file_doc["chat_id"],
         "message_id": file_doc["message_id"],
@@ -890,12 +914,88 @@ async def map_unindexed(file_id: str, payload: dict, _: bool = Depends(require_a
         "episode_end": combined["end"] if combined else parsed.get("episode")
     }
     await db.global_db["files"].update_one({"_id": file_id}, {"$set": new_file_data}, upsert=True)
-    await db.global_db["unindexed"].delete_one({"_id": file_id})
+    
+    if is_unindexed:
+        await db.global_db["unindexed"].delete_one({"_id": file_id})
+        
     return {"status": "success"}
 
-@app.delete("/api/admin/global/unindexed/{file_id}")
-async def delete_unindexed(file_id: str, _: bool = Depends(require_auth)):
+@app.get("/api/admin/global/channels")
+async def get_global_channels(_: bool = Depends(require_auth)):
     from Backend import db
-    if getattr(db, "global_db", None) is not None:
-        await db.global_db["unindexed"].delete_one({"_id": file_id})
-    return {"status": "success"}
+    if getattr(db, "global_db", None) is None: return {"channels": []}
+    
+    idx_cursor = db.global_db["files"].aggregate([{"$group": {"_id": "$chat_id", "count": {"$sum": 1}}}])
+    idx_counts = {c["_id"]: c["count"] async for c in idx_cursor}
+    
+    unidx_cursor = db.global_db["unindexed"].aggregate([{"$group": {"_id": "$chat_id", "count": {"$sum": 1}}}])
+    unidx_counts = {c["_id"]: c["count"] async for c in unidx_cursor}
+    
+    all_chats = set(idx_counts.keys()).union(set(unidx_counts.keys()))
+    
+    channels = []
+    for cid in all_chats:
+        channels.append({
+            "chat_id": cid,
+            "indexed": idx_counts.get(cid, 0),
+            "unindexed": unidx_counts.get(cid, 0),
+            "total": idx_counts.get(cid, 0) + unidx_counts.get(cid, 0)
+        })
+        
+    from Backend.helper.global_search import _get_chat_title
+    from Backend.pyrofork.bot import Userbot
+    for c in channels:
+        if Userbot:
+            c["name"] = await _get_chat_title(Userbot, c["chat_id"])
+        else:
+            c["name"] = str(c["chat_id"])
+            
+    return {"channels": channels}
+
+@app.get("/api/admin/global/channels/{chat_id}/files")
+async def get_channel_files(chat_id: int, filter: str = "indexed", page: int = 1, _: bool = Depends(require_auth)):
+    from Backend import db
+    if getattr(db, "global_db", None) is None: return {"items": [], "total_pages": 1}
+    
+    page_size = 30
+    skip = (page - 1) * page_size
+    items = []
+    total = 0
+    
+    if filter == "indexed":
+        total = await db.global_db["files"].count_documents({"chat_id": chat_id})
+        cursor = db.global_db["files"].find({"chat_id": chat_id}).sort("_id", -1).skip(skip).limit(page_size)
+        docs = [d async for d in cursor]
+        
+        meta_ids = list(set([d.get("meta_id") for d in docs if d.get("meta_id")]))
+        metas = {m["_id"]: m async for m in db.global_db["meta"].find({"_id": {"$in": meta_ids}})}
+        
+        for d in docs:
+            m = metas.get(d.get("meta_id"), {})
+            items.append({
+                "_id": d["_id"],
+                "filename": d["filename"],
+                "size_str": d.get("size_str", ""),
+                "status": "indexed",
+                "meta_title": m.get("title", "Unknown"),
+                "meta_year": m.get("year", ""),
+                "tmdb_id": m.get("tmdb_id", "")
+            })
+    else:
+        total = await db.global_db["unindexed"].count_documents({"chat_id": chat_id})
+        cursor = db.global_db["unindexed"].find({"chat_id": chat_id}).sort("_id", -1).skip(skip).limit(page_size)
+        docs = [d async for d in cursor]
+        for d in docs:
+            items.append({
+                "_id": d["_id"],
+                "filename": d["filename"],
+                "size_str": d.get("size_str", ""),
+                "status": "unindexed",
+                "reason": d.get("reason", "Unknown")
+            })
+            
+    return {
+        "items": items,
+        "total_pages": (total + page_size - 1) // page_size or 1,
+        "total_items": total
+    }
