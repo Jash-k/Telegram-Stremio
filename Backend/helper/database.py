@@ -42,8 +42,23 @@ class Database:
         self.dbs: Dict[str, motor.motor_asyncio.AsyncIOMotorDatabase] = {}
 
         self.current_db_index = 1
-        self.global_client = None
-        self.global_db = None
+        self._global_client = None
+        self._global_db = None
+
+    @property
+    def global_db(self):
+        if self._global_db is None:
+            from Backend.helper.settings_manager import SettingsManager
+            global_uri = SettingsManager.current().global_database_uri
+            if global_uri:
+                try:
+                    import motor.motor_asyncio
+                    self._global_client = motor.motor_asyncio.AsyncIOMotorClient(global_uri)
+                    self._global_db = self._global_client[self.db_name]
+                    LOGGER.info("Connected to Dedicated Global Search Cluster!")
+                except Exception as ge:
+                    LOGGER.error(f"Failed to connect to Global Database URI: {ge}")
+        return self._global_db
 
     async def connect(self):
         try:
@@ -67,17 +82,6 @@ class Database:
                 self.current_db_index = state["current_index"]
 
             LOGGER.info(f"Active storage DB: storage_{self.current_db_index}")
-            
-            # --- CONNECT GLOBAL DB ---
-            from Backend.helper.settings_manager import SettingsManager
-            global_uri = SettingsManager.current().global_database_uri
-            if global_uri:
-                try:
-                    self.global_client = motor.motor_asyncio.AsyncIOMotorClient(global_uri)
-                    self.global_db = self.global_client[self.db_name]
-                    LOGGER.info("Connected to Dedicated Global Search Cluster!")
-                except Exception as ge:
-                    LOGGER.error(f"Failed to connect to Global Database URI: {ge}")
 
             await self.ensure_indexes()
 
