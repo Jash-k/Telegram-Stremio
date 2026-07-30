@@ -77,95 +77,97 @@ async def run_global_indexer(db):
         from Backend.helper.global_search import _resolve_channel_ids
         target_ids = _resolve_channel_ids(settings.global_search_channels)
         
+        from pyrogram import enums
+        from Backend.helper.global_search import _video_filename
         for chat_id in target_ids:
             try:
                 LOGGER.info(f"[GLOBAL INDEXER] Scanning chat {chat_id}...")
                 count = 0
-                async for message in Userbot.search_messages(chat_id, filter="video", limit=1000):
-                    from Backend.helper.global_search import _video_filename
-                    filename = _video_filename(message)
-                    if not filename: continue
-                    
-                    media = message.video or message.document
-                    size = getattr(media, "file_size", 0) or 0
-                    
-                    try:
-                        parsed = PTN.parse(filename)
-                    except:
-                        continue
+                for msg_filter in (enums.MessagesFilter.VIDEO, enums.MessagesFilter.DOCUMENT):
+                    async for message in Userbot.search_messages(chat_id, filter=msg_filter, limit=1000):
+                        filename = _video_filename(message)
+                        if not filename: continue
                         
-                    title = parsed.get("title")
-                    year = parsed.get("year")
-                    
-                    if not title: continue
-                    
-                    # 1. Search TMDB
-                    media_type = "series" if parsed.get("season") or parse_combined_episodes(filename) else "movie"
-                    tmdb_type = "tv" if media_type == "series" else "movie"
-                    
-                    tmdb_res = await safe_tmdb_search(title, tmdb_type, year)
-                    if not tmdb_res:
-                        # Fallback without year
-                        tmdb_res = await safe_tmdb_search(title, tmdb_type, None)
+                        media = getattr(message, "video", None) or getattr(message, "document", None)
+                        size = getattr(media, "file_size", 0) or 0
                         
-                    if not tmdb_res: continue
-                    
-                    # 2. Get Details
-                    tmdb_id = tmdb_res.id
-                    details = await _tmdb_details(tmdb_type, tmdb_id)
-                    if not details: continue
-                    
-                    # 3. Categorize
-                    catalog = determine_catalog(parsed, details, media_type, filename)
-                    
-                    # 4. Save to DB
-                    doc_id = f"tmdb:{tmdb_id}"
-                    
-                    # We store the item info
-                    update_data = {
-                        "tmdb_id": tmdb_id,
-                        "imdb_id": doc_id,
-                        "title": getattr(details, "title", None) or getattr(details, "name", ""),
-                        "year": getattr(details, "release_date", None) or getattr(details, "first_air_date", ""),
-                        "poster": format_tmdb_image(details.poster_path),
-                        "background": format_tmdb_image(details.backdrop_path, "original"),
-                        "description": details.overview,
-                        "media_type": media_type,
-                        "catalog": catalog,
-                        "genres": [g.name for g in (getattr(details, "genres", None) or [])]
-                    }
-                    
-                    # Upsert the meta document
-                    await db.global_db["meta"].update_one(
-                        {"_id": doc_id},
-                        {"$set": update_data},
-                        upsert=True
-                    )
-                    
-                    # Upsert the file document
-                    file_id = f"{chat_id}_{message.id}"
-                    combined = parse_combined_episodes(filename)
-                    
-                    file_data = {
-                        "_id": file_id,
-                        "meta_id": doc_id,
-                        "filename": filename,
-                        "size": size,
-                        "size_str": get_readable_file_size(size),
-                        "quality": parsed.get("resolution", "HD"),
-                        "chat_id": chat_id,
-                        "message_id": message.id,
-                        "season": combined["season"] if combined else parsed.get("season"),
-                        "episode_start": combined["start"] if combined else parsed.get("episode"),
-                        "episode_end": combined["end"] if combined else parsed.get("episode")
-                    }
-                    
-                    await db.global_db["files"].update_one(
-                        {"_id": file_id},
-                        {"$set": file_data},
-                        upsert=True
-                    )
-                    count += 1
+                        try:
+                            parsed = PTN.parse(filename)
+                        except:
+                            continue
+                            
+                        title = parsed.get("title")
+                        year = parsed.get("year")
+                        
+                        if not title: continue
+                        
+                        # 1. Search TMDB
+                        media_type = "series" if parsed.get("season") or parse_combined_episodes(filename) else "movie"
+                        tmdb_type = "tv" if media_type == "series" else "movie" 
+                        
+                        tmdb_res = await safe_tmdb_search(title, tmdb_type, year)
+                        if not tmdb_res:
+                            # Fallback without year
+                            tmdb_res = await safe_tmdb_search(title, tmdb_type, None)
+                            
+                        if not tmdb_res: continue
+                        
+                        # 2. Get Details
+                        tmdb_id = tmdb_res.id
+                        details = await _tmdb_details(tmdb_type, tmdb_id)
+                        if not details: continue
+                        
+                        # 3. Categorize
+                        catalog = determine_catalog(parsed, details, media_type, filename)
+                        
+                        # 4. Save to DB
+                        doc_id = f"tmdb:{tmdb_id}"
+                        
+                        # We store the item info
+                        update_data = {
+                            "tmdb_id": tmdb_id,
+                            "imdb_id": doc_id,
+                            "title": getattr(details, "title", None) or getattr(details, "name", ""),
+                            "year": getattr(details, "release_date", None) or getattr(details, "first_air_date", ""),
+                            "poster": format_tmdb_image(details.poster_path),
+                            "background": format_tmdb_image(details.backdrop_path, "original"),
+                            "description": details.overview,
+                            "media_type": media_type,
+                            "catalog": catalog,
+                            "genres": [g.name for g in (getattr(details, "genres", None) or [])]
+                        }
+                        
+                        # Upsert the meta document
+                        await db.global_db["meta"].update_one(
+                            {"_id": doc_id},
+                            {"$set": update_data},
+                            upsert=True
+                        )
+                        
+                        # Upsert the file document
+                        file_id = f"{chat_id}_{message.id}"
+                        combined = parse_combined_episodes(filename)
+                        
+                        file_data = {
+                            "_id": file_id,
+                            "meta_id": doc_id,
+                            "filename": filename,
+                            "size": size,
+                            "size_str": get_readable_file_size(size),
+                            "quality": parsed.get("resolution", "HD"),
+                            "chat_id": chat_id,
+                            "message_id": message.id,
+                            "season": combined["season"] if combined else parsed.get("season"),
+                            "episode_start": combined["start"] if combined else parsed.get("episode"),
+                            "episode_end": combined["end"] if combined else parsed.get("episode")
+                        }
+                        
+                        await db.global_db["files"].update_one(
+                            {"_id": file_id},
+                            {"$set": file_data},
+                            upsert=True
+                        )
+                        count += 1
                 LOGGER.info(f"[GLOBAL INDEXER] Indexed {count} files from {chat_id}.")
             except Exception as e:
                 LOGGER.error(f"[GLOBAL INDEXER] Error scanning {chat_id}: {e}")
