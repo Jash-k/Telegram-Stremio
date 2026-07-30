@@ -335,6 +335,22 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
             }
         ]
 
+        if getattr(db, "global_db", None) is not None:
+            try:
+                g_cats = await db.global_db["catalogs"].find().to_list(None)
+                for gc in g_cats:
+                    catalogs.append({
+                        "type": gc.get("type", "movie"),
+                        "id": f"global_{gc['_id']}",
+                        "name": gc.get("name", "Global Catalog"),
+                        "extra": [
+                            {"name": "search", "isRequired": False},
+                            {"name": "skip", "isRequired": False}
+                        ]
+                    })
+            except Exception as e:
+                LOGGER.error(f"Error appending global catalogs: {e}")
+                
         try:
             custom_catalogs = await db.get_custom_catalogs()
             for catalog in custom_catalogs:

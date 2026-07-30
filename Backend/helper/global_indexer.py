@@ -1,10 +1,18 @@
 import asyncio
 import re
-from typing import List, Dict, Any
+import time
+from typing import Dict, List, Optional
+
 import PTN
+from pyrogram import enums
+from pyrogram.errors import (
+    FloodWait, ChatAdminRequired, ChannelPrivate, PeerIdInvalid,
+    UserNotParticipant, AuthKeyUnregistered, SessionRevoked, RPCError,
+)
 
 from Backend.logger import LOGGER
 from Backend.helper.settings_manager import SettingsManager
+from Backend.helper.encrypt import encode_string
 from Backend.helper.pyro import get_readable_file_size
 from Backend.pyrofork.bot import Userbot
 from Backend.helper.split_files import parse_combined_episodes
@@ -16,7 +24,6 @@ async def get_or_create_global_catalogs(db):
     if db.global_db is None:
         return
         
-    # Standard catalogs
     catalogs = [
         {"_id": "tamil_movies", "type": "movie", "name": "Tamil Movies"},
         {"_id": "dubbed_movies", "type": "movie", "name": "Dubbed Movies"},
@@ -29,11 +36,7 @@ async def get_or_create_global_catalogs(db):
     ]
     
     for cat in catalogs:
-        await db.global_db["catalogs"].update_one(
-            {"_id": cat["_id"]},
-            {"$set": cat},
-            upsert=True
-        )
+        await db.global_db["catalogs"].update_one({"_id": cat["_id"]}, {"$set": cat}, upsert=True)
 
 def determine_catalog(parsed: dict, details, media_type: str, filename: str) -> str:
     original_lang = getattr(details, "original_language", "")
@@ -45,10 +48,8 @@ def determine_catalog(parsed: dict, details, media_type: str, filename: str) -> 
     
     if is_anime:
         return "anime_movies" if media_type == "movie" else "anime_series"
-        
     if is_tamil:
         return "tamil_movies" if media_type == "movie" else "tamil_series"
-        
     if is_dubbed:
         return "dubbed_movies" if media_type == "movie" else "dubbed_series"
         
@@ -74,17 +75,25 @@ async def run_global_indexer(db):
         await get_or_create_global_catalogs(db)
         
         settings = SettingsManager.current()
-        from Backend.helper.global_search import _resolve_channel_ids
+        from Backend.helper.global_search import _resolve_channel_ids, _video_filename
         target_ids = _resolve_channel_ids(settings.global_search_channels)
         
-        from pyrogram import enums
-        from Backend.helper.global_search import _video_filename
         for chat_id in target_ids:
             try:
                 LOGGER.info(f"[GLOBAL INDEXER] Scanning chat {chat_id}...")
                 count = 0
                 for msg_filter in (enums.MessagesFilter.VIDEO, enums.MessagesFilter.DOCUMENT):
-                    async for message in Userbot.search_messages(chat_id, filter=msg_filter, limit=1000):
+                    sync_key = f"sync_{chat_id}_{msg_filter.name}"
+                    sync_state = await db.global_db["state"].find_one({"_id": sync_key}) or {}
+                    last_id = sync_state.get("last_id", 0)
+                    max_id_seen = last_id
+                    
+                    async for message in Userbot.search_messages(chat_id, filter=msg_filter):
+                        if message.id <= last_id:
+                            break # Reached previously scanned messages!
+                            
+                        max_id_seen = max(max_id_seen, message.id)
+                        
                         filename = _video_filename(message)
                         if not filename: continue
                         
@@ -107,7 +116,6 @@ async def run_global_indexer(db):
                         
                         tmdb_res = await safe_tmdb_search(title, tmdb_type, year)
                         if not tmdb_res:
-                            # Fallback without year
                             tmdb_res = await safe_tmdb_search(title, tmdb_type, None)
                             
                         if not tmdb_res: continue
@@ -123,8 +131,6 @@ async def run_global_indexer(db):
                         # 4. Save to DB
                         doc_id = f"tmdb:{tmdb_id}"
                         
-                        # We store the item info
-                        # Ensure year is cast to string to prevent BSON encoding errors with datetime.date
                         year_val = getattr(details, "release_date", None) or getattr(details, "first_air_date", "")
                         year_str = str(year_val) if year_val else ""
 
@@ -141,14 +147,12 @@ async def run_global_indexer(db):
                             "genres": [g.name for g in (getattr(details, "genres", None) or [])]
                         }
                         
-                        # Upsert the meta document
                         await db.global_db["meta"].update_one(
                             {"_id": doc_id},
                             {"$set": update_data},
                             upsert=True
                         )
                         
-                        # Upsert the file document
                         file_id = f"{chat_id}_{message.id}"
                         combined = parse_combined_episodes(filename)
                         
@@ -172,7 +176,12 @@ async def run_global_indexer(db):
                             upsert=True
                         )
                         count += 1
-                LOGGER.info(f"[GLOBAL INDEXER] Indexed {count} files from {chat_id}.")
+                        
+                    # Save checkpoint
+                    if max_id_seen > last_id:
+                        await db.global_db["state"].update_one({"_id": sync_key}, {"$set": {"last_id": max_id_seen}}, upsert=True)
+                        
+                LOGGER.info(f"[GLOBAL INDEXER] Indexed {count} new files from {chat_id}.")
             except Exception as e:
                 LOGGER.error(f"[GLOBAL INDEXER] Error scanning {chat_id}: {e}")
                 
@@ -181,4 +190,3 @@ async def run_global_indexer(db):
     finally:
         _INDEXER_RUNNING = False
         LOGGER.info("[GLOBAL INDEXER] Finished.")
-

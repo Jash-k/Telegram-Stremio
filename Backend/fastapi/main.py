@@ -720,8 +720,16 @@ async def global_stats(_: bool = Depends(require_auth)):
         if getattr(db, "global_db", None) is None:
             return {"files_count": 0, "catalogs": [], "recent_files": []}
         files_count = await db.global_db["files"].count_documents({})
+        
+        counts_cursor = db.global_db["meta"].aggregate([{"$group": {"_id": "$catalog", "count": {"$sum": 1}}}])
+        counts = {c["_id"]: c["count"] async for c in counts_cursor}
+        
         cats_cursor = db.global_db["catalogs"].find()
-        catalogs = [c async for c in cats_cursor]
+        catalogs = []
+        async for c in cats_cursor:
+            c["count"] = counts.get(c["_id"], 0)
+            catalogs.append(c)
+            
         files_cursor = db.global_db["files"].find().sort("_id", -1).limit(50)
         files = [f async for f in files_cursor]
         return {
@@ -730,8 +738,42 @@ async def global_stats(_: bool = Depends(require_auth)):
             "recent_files": files
         }
     except Exception as e:
-        # If the auth fails, return a 500 error gracefully
         return {"files_count": "ERROR", "catalogs": [], "recent_files": []}
+
+@app.get("/api/admin/global/files/catalog/{catalog_id}")
+async def get_global_catalog_files(catalog_id: str, page: int = 1, _: bool = Depends(require_auth)):
+    from Backend import db
+    try:
+        if getattr(db, "global_db", None) is None:
+            return {"items": [], "total_pages": 1}
+            
+        page_size = 30
+        skip = (page - 1) * page_size
+        
+        query = {"catalog": catalog_id}
+        total = await db.global_db["meta"].count_documents(query)
+        cursor = db.global_db["meta"].find(query).sort("_id", -1).skip(skip).limit(page_size)
+        items = [doc async for doc in cursor]
+        
+        # Fetch file counts for each meta
+        for item in items:
+            item["file_count"] = await db.global_db["files"].count_documents({"meta_id": item["_id"]})
+        
+        return {
+            "items": items,
+            "total_pages": (total + page_size - 1) // page_size or 1,
+            "total_items": total
+        }
+    except Exception as e:
+        return {"items": [], "total_pages": 1, "error": str(e)}
+
+@app.delete("/api/admin/global/meta/{meta_id}")
+async def delete_global_meta(meta_id: str, _: bool = Depends(require_auth)):
+    from Backend import db
+    if getattr(db, "global_db", None) is not None:
+        await db.global_db["meta"].delete_one({"_id": meta_id})
+        await db.global_db["files"].delete_many({"meta_id": meta_id})
+    return {"status": "success"}
 
 @app.delete("/api/admin/global/catalogs/{cat_id}")
 async def delete_global_cat(cat_id: str, _: bool = Depends(require_auth)):

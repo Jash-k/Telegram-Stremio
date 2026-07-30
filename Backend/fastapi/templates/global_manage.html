@@ -54,48 +54,84 @@
         <div class="stat-lbl">Global Catalogs</div>
     </div>
     <div class="stat-card" style="border: 2px dashed var(--primary); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.5rem;">
-        <button id="btn-index" onclick="startIndexer()" class="btn btn-primary" style="width: 100%;"><i class="fa-solid fa-play"></i> Start Indexer</button>
+        <button id="btn-index" onclick="startIndexer()" class="btn btn-primary" style="width: 100%;"><i class="fa-solid fa-play"></i> Sync New Files</button>
         <span id="lbl-index-status" style="font-size: 0.8rem; font-weight: 600; color: var(--text-sec);">IDLE</span>
     </div>
 </div>
 
-<div class="table-wrap">
-    <table>
-        <thead>
-            <tr>
-                <th>Catalog Name</th>
-                <th>Type</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody id="catalog-list">
-            <tr><td colspan="3" style="text-align:center;">Loading...</td></tr>
-        </tbody>
-    </table>
+<div id="view-dashboard">
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Catalog Name</th>
+                    <th>Type</th>
+                    <th>Count</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="catalog-list">
+                <tr><td colspan="4" style="text-align:center;">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+        <h3 style="font-size:1.1rem; font-weight:600;">Recent Indexed Files</h3>
+        <button onclick="clearAllFiles()" class="btn btn-danger"><i class="fa-solid fa-trash"></i> Purge All Files</button>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Filename</th>
+                    <th>Size</th>
+                    <th>Catalog</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="file-list">
+                <tr><td colspan="4" style="text-align:center;">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
 </div>
 
-<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
-    <h3 style="font-size:1.1rem; font-weight:600;">Recent Indexed Files</h3>
-    <button onclick="clearAllFiles()" class="btn btn-danger"><i class="fa-solid fa-trash"></i> Purge All Files</button>
-</div>
-
-<div class="table-wrap">
-    <table>
-        <thead>
-            <tr>
-                <th>Filename</th>
-                <th>Size</th>
-                <th>Catalog</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody id="file-list">
-            <tr><td colspan="4" style="text-align:center;">Loading...</td></tr>
-        </tbody>
-    </table>
+<div id="view-catalog" style="display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+        <h3 style="font-size:1.1rem; font-weight:600;" id="cat-title">Catalog View</h3>
+        <button onclick="closeCatalogView()" class="btn btn-ghost"><i class="fa-solid fa-arrow-left"></i> Back</button>
+    </div>
+    
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Title</th>
+                    <th>Year</th>
+                    <th>Files</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="cat-items-list">
+                <tr><td colspan="4" style="text-align:center;">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+    
+    <div style="display:flex; justify-content:center; gap:1rem; align-items:center; margin-bottom:2rem;">
+        <button class="btn btn-ghost" id="btn-prev" onclick="changePage(-1)">Previous</button>
+        <span id="page-info" style="font-weight:bold;">Page 1</span>
+        <button class="btn btn-ghost" id="btn-next" onclick="changePage(1)">Next</button>
+    </div>
 </div>
 
 <script>
+let currentCatalog = null;
+let currentPage = 1;
+let totalPages = 1;
+
 async function checkIndexer() {
     try {
         const res = await fetch('/api/admin/global/index/status');
@@ -104,13 +140,13 @@ async function checkIndexer() {
         const lbl = document.getElementById('lbl-index-status');
         if (data.running) {
             btn.disabled = true;
-            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Indexing...';
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Syncing...';
             lbl.textContent = "RUNNING IN BACKGROUND";
             lbl.style.color = "#22c55e";
             setTimeout(checkIndexer, 5000);
         } else {
             btn.disabled = false;
-            btn.innerHTML = '<i class="fa-solid fa-play"></i> Start Indexer';
+            btn.innerHTML = '<i class="fa-solid fa-play"></i> Sync New Files';
             lbl.textContent = "IDLE";
             lbl.style.color = "var(--text-sec)";
         }
@@ -118,7 +154,7 @@ async function checkIndexer() {
 }
 
 async function startIndexer() {
-    if (!confirm("Start the background indexer? This will scan your global channels, fetch TMDB data, and add the files to this database.")) return;
+    if (!confirm("Sync new files? This will pull only the new files added since the last scan and categorize them.")) return;
     await fetch('/api/admin/global/index/start', {method: 'POST'});
     checkIndexer();
 }
@@ -134,12 +170,13 @@ async function loadData() {
         const catList = document.getElementById('catalog-list');
         catList.innerHTML = '';
         if (data.catalogs.length === 0) {
-            catList.innerHTML = '<tr><td colspan="3" style="text-align:center;">No catalogs found.</td></tr>';
+            catList.innerHTML = '<tr><td colspan="4" style="text-align:center;">No catalogs found.</td></tr>';
         } else {
             data.catalogs.forEach(c => {
                 catList.innerHTML += `<tr>
                     <td><strong>${c.name}</strong> <span style="color:var(--text-sec);font-size:0.8rem;">(${c._id})</span></td>
                     <td>${c.type}</td>
+                    <td><a href="#" onclick="openCatalogView('${c._id}', '${c.name}'); return false;" style="color:var(--primary); font-weight:bold; text-decoration:underline;">${c.count || 0} items</a></td>
                     <td>
                         <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteCatalog('${c._id}')">Delete</button>
                     </td>
@@ -168,8 +205,73 @@ async function loadData() {
     }
 }
 
+async function openCatalogView(catId, catName) {
+    currentCatalog = catId;
+    currentPage = 1;
+    document.getElementById('view-dashboard').style.display = 'none';
+    document.getElementById('view-catalog').style.display = 'block';
+    document.getElementById('cat-title').textContent = `${catName} Items`;
+    await loadCatalogPage();
+}
+
+function closeCatalogView() {
+    currentCatalog = null;
+    document.getElementById('view-catalog').style.display = 'none';
+    document.getElementById('view-dashboard').style.display = 'block';
+    loadData();
+}
+
+async function loadCatalogPage() {
+    const list = document.getElementById('cat-items-list');
+    list.innerHTML = '<tr><td colspan="4" style="text-align:center;"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
+    
+    try {
+        const res = await fetch(`/api/admin/global/files/catalog/${currentCatalog}?page=${currentPage}`);
+        const data = await res.json();
+        
+        totalPages = data.total_pages;
+        document.getElementById('page-info').textContent = `Page ${currentPage} of ${totalPages}`;
+        document.getElementById('btn-prev').disabled = currentPage <= 1;
+        document.getElementById('btn-next').disabled = currentPage >= totalPages;
+        
+        list.innerHTML = '';
+        if (data.items.length === 0) {
+            list.innerHTML = '<tr><td colspan="4" style="text-align:center;">No items found.</td></tr>';
+        } else {
+            data.items.forEach(item => {
+                list.innerHTML += `<tr>
+                    <td>
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <img src="${item.poster || ''}" style="width:30px; height:45px; object-fit:cover; border-radius:4px; background:var(--surface);">
+                            <strong>${item.title}</strong>
+                        </div>
+                    </td>
+                    <td>${item.year || '-'}</td>
+                    <td>${item.file_count || 0}</td>
+                    <td>
+                        <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteMeta('${item._id}')">Remove</button>
+                    </td>
+                </tr>`;
+            });
+        }
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+function changePage(delta) {
+    currentPage += delta;
+    loadCatalogPage();
+}
+
+async function deleteMeta(id) {
+    if (!confirm('Remove this movie/show and ALL its associated Telegram files from the Global Search DB?')) return;
+    await fetch(`/api/admin/global/meta/${id}`, { method: 'DELETE' });
+    await loadCatalogPage();
+}
+
 async function deleteCatalog(id) {
-    if (!confirm('Delete this catalog?')) return;
+    if (!confirm('Delete this catalog mapping?')) return;
     await fetch(`/api/admin/global/catalogs/${id}`, { method: 'DELETE' });
     loadData();
 }
