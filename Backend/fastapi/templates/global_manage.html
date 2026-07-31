@@ -287,6 +287,7 @@ function switchView(viewName) {
     document.getElementById('view-dashboard').style.display = 'none';
     document.getElementById('view-channels').style.display = 'none';
     document.getElementById('view-channel-files').style.display = 'none';
+    document.getElementById('view-meta-files').style.display = 'none';
     document.getElementById('view-unindexed').style.display = 'none';
     document.getElementById('view-catalog').style.display = 'none';
     
@@ -509,6 +510,67 @@ function showBatchMapModalCf() {
 }
 
 
+let currentMetaId = null;
+
+async function openMetaFilesView(metaId, metaTitle) {
+    currentMetaId = metaId;
+    document.getElementById('view-catalog').style.display = 'none';
+    document.getElementById('view-meta-files').style.display = 'block';
+    document.getElementById('meta-files-title').textContent = `Files for: ${metaTitle}`;
+    await loadMetaFiles();
+}
+
+function closeMetaFilesView() {
+    currentMetaId = null;
+    document.getElementById('view-meta-files').style.display = 'none';
+    document.getElementById('view-catalog').style.display = 'block';
+    loadCatalogPage(); // reload to update counts
+}
+
+async function loadMetaFiles() {
+    const list = document.getElementById('meta-files-list');
+    list.innerHTML = '<tr><td colspan="4" style="text-align:center;"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
+    try {
+        const res = await fetch(`/api/admin/global/meta/${currentMetaId}/files`);
+        const data = await res.json();
+        
+        list.innerHTML = '';
+        if (data.items.length === 0) {
+            list.innerHTML = '<tr><td colspan="4" style="text-align:center;">No files found.</td></tr>';
+        } else {
+            data.items.forEach(item => {
+                const escFilename = escapeHtml(item.filename);
+                let seInfo = '-';
+                if (item.season !== null && item.season !== undefined) {
+                    seInfo = `S${item.season}`;
+                    if (item.episode_start !== null && item.episode_start !== undefined) {
+                        seInfo += ` E${item.episode_start}`;
+                        if (item.episode_end && item.episode_end !== item.episode_start) {
+                            seInfo += `-${item.episode_end}`;
+                        }
+                    }
+                }
+                list.innerHTML += `<tr>
+                    <td><div style="max-width:350px; word-break:break-all; font-size:0.9rem; font-weight:600;">${escFilename}</div></td>
+                    <td>${item.size_str || '0 MB'}</td>
+                    <td><span class="badge" style="background:var(--surface-3);color:var(--text);">${seInfo}</span></td>
+                    <td>
+                        <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteMetaFile('${item._id}')"><i class="fa-solid fa-trash"></i></button>
+                    </td>
+                </tr>`;
+            });
+        }
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+async function deleteMetaFile(id) {
+    if (!confirm('Delete this mapped file?')) return;
+    await fetch(`/api/admin/global/files/${id}`, { method: 'DELETE' });
+    await loadMetaFiles();
+}
+
 /* --- Catalog Drilldown View --- */
 
 async function openCatalogView(catId, catName) {
@@ -547,7 +609,7 @@ async function loadCatalogPage() {
                         </div>
                     </td>
                     <td>${item.year || '-'}</td>
-                    <td>${item.file_count || 0}</td>
+                    <td><a href="#" onclick="openMetaFilesView('${item._id}', '${escapeHtml(item.title)}'); return false;" style="color:var(--primary); font-weight:bold; text-decoration:underline;">${item.file_count || 0} files</a></td>
                     <td>
                         <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteMeta('${item._id}')">Remove</button>
                     </td>

@@ -1124,3 +1124,10 @@ async def map_batch_files(payload: dict, _: bool = Depends(require_auth)):
         success_count += 1
             
     return {"status": "success", "count": success_count}
+@app.get("/api/admin/global/meta/{meta_id}/files")
+async def get_global_meta_files(meta_id: str, _: bool = Depends(require_auth)):
+    from Backend import db
+    if getattr(db, "global_db", None) is None: return {"items": []}
+    cursor = db.global_db["files"].find({"meta_id": meta_id}).sort([("season", 1), ("episode_start", 1)])
+    items = [doc async for doc in cursor]
+    return {"items": items}
