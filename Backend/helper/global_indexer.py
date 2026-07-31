@@ -69,13 +69,20 @@ async def log_unindexed(db, file_id, filename, size, chat_id, message_id, reason
     }
     await db.global_db["unindexed"].update_one({"_id": file_id}, {"$set": doc}, upsert=True)
 
+async def update_checkpoint(db, sync_key, msg_id):
+    await db.global_db["state"].update_one(
+        {"_id": sync_key}, 
+        {"$set": {"last_id": msg_id}}, 
+        upsert=True
+    )
+
 async def run_global_indexer(db):
     global _INDEXER_RUNNING
     if _INDEXER_RUNNING:
         LOGGER.info("[GLOBAL INDEXER] Already running.")
         return
         
-    if db.global_db is None:
+    if getattr(db, "global_db", None) is None:
         LOGGER.info("[GLOBAL INDEXER] No Global DB configured. Skipping.")
         return
         
@@ -92,24 +99,60 @@ async def run_global_indexer(db):
         from Backend.helper.global_search import _resolve_channel_ids, _video_filename
         target_ids = _resolve_channel_ids(settings.global_search_channels)
         
+        from Backend.helper.global_search import _video_filename
         for chat_id in target_ids:
             try:
                 LOGGER.info(f"[GLOBAL INDEXER] Scanning chat {chat_id}...")
                 count = 0
-                for msg_filter in (enums.MessagesFilter.VIDEO, enums.MessagesFilter.DOCUMENT):
-                    sync_key = f"sync_{chat_id}_{msg_filter.name}"
-                    sync_state = await db.global_db["state"].find_one({"_id": sync_key}) or {}
-                    last_id = sync_state.get("last_id", 0)
-                    max_id_seen = last_id
+                
+                max_id = 0
+                try:
+                    # Get the most recent message to find max_id
+                    async for msg in Userbot.search_messages(chat_id, limit=1):
+                        max_id = msg.id
+                except Exception as e:
+                    LOGGER.error(f"[GLOBAL INDEXER] Failed to get chat max_id for {chat_id}: {e}")
+                    continue
+                
+                if max_id == 0:
+                    continue
                     
-                    async for message in Userbot.search_messages(chat_id, filter=msg_filter):
-                        if message.id <= last_id:
-                            break # Reached previously scanned messages
-                            
-                        max_id_seen = max(max_id_seen, message.id)
+                sync_key = f"sync_{chat_id}"
+                sync_state = await db.global_db["state"].find_one({"_id": sync_key}) or {}
+                last_id = sync_state.get("last_id", 0)
+                
+                if last_id >= max_id:
+                    LOGGER.info(f"[GLOBAL INDEXER] Chat {chat_id} is already fully synced.")
+                    continue
+                    
+                LOGGER.info(f"[GLOBAL INDEXER] Chat {chat_id} syncing from ID {last_id + 1} to {max_id}...")
+                
+                chunk_size = 200
+                for start_id in range(last_id + 1, max_id + 1, chunk_size):
+                    end_id = min(start_id + chunk_size, max_id + 1)
+                    ids_to_fetch = list(range(start_id, end_id))
+                    
+                    try:
+                        messages = await Userbot.get_messages(chat_id, message_ids=ids_to_fetch)
+                    except FloodWait as fw:
+                        wait_time = getattr(fw, "value", 5)
+                        LOGGER.warning(f"[GLOBAL INDEXER] FloodWait {wait_time}s in {chat_id}. Sleeping...")
+                        await asyncio.sleep(wait_time)
+                        messages = await Userbot.get_messages(chat_id, message_ids=ids_to_fetch)
+                    except Exception as e:
+                        LOGGER.error(f"[GLOBAL INDEXER] Fetch error in {chat_id}: {e}")
+                        continue
                         
+                    for message in messages:
+                        if getattr(message, "empty", True):
+                            continue
+                            
+                        if not getattr(message, "video", None) and not getattr(message, "document", None):
+                            continue
+                            
                         filename = _video_filename(message)
-                        if not filename: continue
+                        if not filename: 
+                            continue
                         
                         media = getattr(message, "video", None) or getattr(message, "document", None)
                         size = getattr(media, "file_size", 0) or 0
@@ -202,10 +245,9 @@ async def run_global_indexer(db):
                         
                         count += 1
                         
-                    # Save checkpoint
-                    if max_id_seen > last_id:
-                        await db.global_db["state"].update_one({"_id": sync_key}, {"$set": {"last_id": max_id_seen}}, upsert=True)
-                        
+                    # Successfully processed a chunk! Update checkpoint.
+                    await update_checkpoint(db, sync_key, end_id - 1)
+                    
                 LOGGER.info(f"[GLOBAL INDEXER] Indexed {count} new files from {chat_id}.")
             except Exception as e:
                 LOGGER.error(f"[GLOBAL INDEXER] Error scanning {chat_id}: {e}")
