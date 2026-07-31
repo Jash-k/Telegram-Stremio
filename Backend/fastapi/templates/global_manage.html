@@ -6,29 +6,12 @@
 
 {% block content %}
 <style>
-    .global-stats {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 1.5rem;
-        margin-bottom: 2rem;
-    }
-    .stat-card {
-        background: var(--card);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        padding: 1.5rem;
-        text-align: center;
-    }
+    .global-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
+    .stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; text-align: center; }
     .stat-val { font-size: 2rem; font-weight: 800; color: var(--text); }
     .stat-lbl { font-size: 0.85rem; color: var(--text-sec); font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; margin-top: 0.5rem; }
     
-    .table-wrap {
-        background: var(--card);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        overflow: hidden;
-        margin-bottom: 2rem;
-    }
+    .table-wrap { background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 2rem; }
     table { width: 100%; border-collapse: collapse; }
     th, td { padding: 1rem; text-align: left; border-bottom: 1px solid var(--border); }
     th { background: var(--surface); font-size: 0.85rem; color: var(--text-sec); text-transform: uppercase; }
@@ -54,18 +37,19 @@
         <div class="stat-lbl">Global Catalogs</div>
     </div>
     <div class="stat-card" style="border: 2px dashed var(--primary); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.5rem;">
-        <button id="btn-index" onclick="toggleIndexer()" class="btn btn-primary" style="width: 100%;"><i class="fa-solid fa-play"></i> Sync New Files</button>
-        <span id="lbl-index-status" style="font-size: 0.8rem; font-weight: 600; color: var(--text-sec);">IDLE</span>
+        <button id="btn-index" onclick="toggleIndexer()" class="btn btn-primary" style="width: 100%;"><i class="fa-solid fa-play"></i> Sync All Channels</button>
+        <button id="btn-wipe-rescan" onclick="wipeAndRescan()" class="btn btn-danger" style="width: 100%; background:#991b1b; border-color:#7f1d1d;"><i class="fa-solid fa-skull-crossbones"></i> Wipe DB</button>
+        <span id="lbl-index-status" style="font-size: 0.8rem; font-weight: 600; color: var(--text-sec); margin-top:5px;">IDLE</span>
     </div>
 </div>
 
 <div style="display:flex; gap:10px; margin-bottom:1.5rem; overflow-x:auto;">
-    <button id="tab-dash" class="btn btn-primary" style="white-space:nowrap;" onclick="switchView('dashboard')"><i class="fa-solid fa-chart-line"></i> Dashboard</button>
+    <button id="tab-dash" class="btn btn-primary" style="white-space:nowrap;" onclick="switchView('dashboard')"><i class="fa-solid fa-layer-group"></i> Catalogs</button>
     <button id="tab-channels" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('channels')"><i class="fa-solid fa-server"></i> Channels</button>
-    <button id="tab-unidx" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('unindexed')"><i class="fa-solid fa-triangle-exclamation"></i> Unindexed <span id="unindexed-badge" class="badge" style="display:none; background:#ef4444; color:white; margin-left:5px;">0</span></button>
+    <button id="tab-unidx" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('unindexed')"><i class="fa-solid fa-triangle-exclamation"></i> Unindexed Queue <span id="unindexed-badge" class="badge" style="display:none; background:#ef4444; color:white; margin-left:5px;">0</span></button>
 </div>
 
-<!-- Dashboard View -->
+<!-- Catalogs View -->
 <div id="view-dashboard">
     <div class="table-wrap">
         <table>
@@ -82,27 +66,6 @@
             </tbody>
         </table>
     </div>
-
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
-        <h3 style="font-size:1.1rem; font-weight:600;">Recent Indexed Files</h3>
-        <button onclick="clearAllFiles()" class="btn btn-danger"><i class="fa-solid fa-trash"></i> Purge All Files</button>
-    </div>
-
-    <div class="table-wrap">
-        <table>
-            <thead>
-                <tr>
-                    <th>Filename</th>
-                    <th>Size</th>
-                    <th>Catalog</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody id="file-list">
-                <tr><td colspan="4" style="text-align:center;">Loading...</td></tr>
-            </tbody>
-        </table>
-    </div>
 </div>
 
 <!-- Catalog Drilldown View -->
@@ -111,7 +74,6 @@
         <h3 style="font-size:1.1rem; font-weight:600;" id="cat-title">Catalog View</h3>
         <button onclick="switchView('dashboard')" class="btn btn-ghost"><i class="fa-solid fa-arrow-left"></i> Back</button>
     </div>
-    
     <div class="table-wrap">
         <table>
             <thead>
@@ -127,40 +89,67 @@
             </tbody>
         </table>
     </div>
-    
     <div style="display:flex; justify-content:center; gap:1rem; align-items:center; margin-bottom:2rem;">
         <button class="btn btn-ghost" id="btn-prev" onclick="changePage(-1)">Previous</button>
-        <span id="page-info" style="font-weight:bold;">Page 1</span>
+        <span style="font-weight:bold;">Page <span id="page-info">1</span> of <span id="total-pages-info">1</span></span>
         <button class="btn btn-ghost" id="btn-next" onclick="changePage(1)">Next</button>
     </div>
 </div>
 
-<!-- Channels View -->
-<div id="view-channels" style="display:none;">
+<!-- Meta Files Drilldown View -->
+<div id="view-meta-files" style="display:none;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
-        <h3 style="font-size:1.1rem; font-weight:600;">Global Channels</h3>
-        <button onclick="loadChannels()" class="btn btn-ghost"><i class="fa-solid fa-rotate-right"></i> Refresh</button>
+        <h3 style="font-size:1.1rem; font-weight:600;" id="meta-files-title">Mapped Files</h3>
+        <button onclick="closeMetaFilesView()" class="btn btn-ghost"><i class="fa-solid fa-arrow-left"></i> Back</button>
     </div>
     <div class="table-wrap">
         <table>
             <thead>
-                <tr><th>Channel</th><th>Indexed</th><th>Unindexed</th><th>Total</th><th>Actions</th></tr>
+                <tr>
+                    <th>Filename</th>
+                    <th>Size</th>
+                    <th>S/E</th>
+                    <th>Actions</th>
+                </tr>
             </thead>
-            <tbody id="channels-list">
+            <tbody id="meta-files-list">
                 <tr><td colspan="4" style="text-align:center;">Loading...</td></tr>
             </tbody>
         </table>
     </div>
 </div>
 
-<!-- Channel Files View -->
+<!-- Channels View -->
+<div id="view-channels" style="display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+        <h3 style="font-size:1.1rem; font-weight:600;">Telegram Channels</h3>
+        <button onclick="loadChannels()" class="btn btn-ghost"><i class="fa-solid fa-rotate-right"></i> Refresh</button>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Channel</th>
+                    <th>Indexed</th>
+                    <th>Unindexed (Failed)</th>
+                    <th>Total</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="channels-list">
+                <tr><td colspan="5" style="text-align:center;">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Channel Files Drilldown View -->
 <div id="view-channel-files" style="display:none;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; flex-wrap:wrap; gap:10px;">
         <div style="display:flex; align-items:center; gap:10px;">
             <button onclick="switchView('channels')" class="btn btn-ghost" style="padding: 0.4rem 0.8rem; font-size: 0.9rem;"><i class="fa-solid fa-arrow-left"></i> Back</button>
             <h3 style="font-size:1.1rem; font-weight:600;" id="channel-files-title">Channel Files</h3>
         </div>
-        
         <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
             <button id="btn-filter-indexed" class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.9rem;" onclick="setChannelFilter('indexed')">Indexed</button>
             <button id="btn-filter-unindexed" class="btn btn-ghost" style="padding: 0.4rem 0.8rem; font-size: 0.9rem;" onclick="setChannelFilter('unindexed')">Unindexed</button>
@@ -239,9 +228,9 @@
         <p style="font-size:0.85rem; color:var(--text-sec); margin-bottom:15px; word-break:break-all;" id="map-filename"></p>
         
         <div style="margin-bottom:15px;">
-            <label class="s-label">TMDB ID</label>
-            <input type="number" id="map-tmdb-id" class="s-input" placeholder="e.g. 12345">
-            <p style="font-size:0.75rem; color:var(--text-sec); margin-top:5px;">Find the ID from the TMDB website URL (e.g. themoviedb.org/movie/12345).</p>
+            <label class="s-label">TMDB ID or IMDb/TMDB Link</label>
+            <input type="text" id="map-tmdb-id" class="s-input" placeholder="e.g. 12345 or https://imdb.com/title/tt1234567/">
+            <p style="font-size:0.75rem; color:var(--text-sec); margin-top:5px;">Accepts raw TMDB IDs, or full links to IMDb/TMDB.</p>
         </div>
         
         <div style="margin-bottom:20px;">
@@ -281,35 +270,39 @@ let cfTotalPages = 1;
 let unidxPage = 1;
 let unidxTotalPages = 1;
 
+let isIndexerRunning = false;
 let currentActiveCallback = null;
 
 function switchView(viewName) {
     document.getElementById('view-dashboard').style.display = 'none';
     document.getElementById('view-channels').style.display = 'none';
     document.getElementById('view-channel-files').style.display = 'none';
-    document.getElementById('view-meta-files').style.display = 'none';
     document.getElementById('view-unindexed').style.display = 'none';
     document.getElementById('view-catalog').style.display = 'none';
+    document.getElementById('view-meta-files').style.display = 'none';
     
     document.getElementById('tab-dash').classList.replace('btn-primary', 'btn-ghost');
     document.getElementById('tab-channels').classList.replace('btn-primary', 'btn-ghost');
     document.getElementById('tab-unidx').classList.replace('btn-primary', 'btn-ghost');
     
-    document.getElementById(`view-${viewName}`).style.display = 'block';
-    
     if (viewName === 'dashboard') {
+        document.getElementById(`view-dashboard`).style.display = 'block';
         document.getElementById('tab-dash').classList.replace('btn-ghost', 'btn-primary');
         loadData();
         currentActiveCallback = loadData;
     } else if (viewName === 'channels') {
+        document.getElementById(`view-channels`).style.display = 'block';
         document.getElementById('tab-channels').classList.replace('btn-ghost', 'btn-primary');
         loadChannels();
         currentActiveCallback = loadChannels;
     } else if (viewName === 'unindexed') {
+        document.getElementById(`view-unindexed`).style.display = 'block';
         document.getElementById('tab-unidx').classList.replace('btn-ghost', 'btn-primary');
         unidxPage = 1;
         loadUnindexedPage();
         currentActiveCallback = loadUnindexedPage;
+    } else {
+        document.getElementById(`view-${viewName}`).style.display = 'block';
     }
 }
 
@@ -318,39 +311,59 @@ async function checkIndexer() {
         const res = await fetch('/api/admin/global/index/status');
         const data = await res.json();
         const btn = document.getElementById('btn-index');
+        const wipeBtn = document.getElementById('btn-wipe-rescan');
         const lbl = document.getElementById('lbl-index-status');
-        if (data.running) {
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Syncing...';
+        isIndexerRunning = data.running;
+        
+        if (isIndexerRunning) {
+            btn.innerHTML = '<i class="fa-solid fa-stop"></i> Stop Sync';
+            btn.classList.replace('btn-primary', 'btn-danger');
+            if (wipeBtn) wipeBtn.disabled = true;
             lbl.textContent = "RUNNING IN BACKGROUND";
             lbl.style.color = "#22c55e";
             setTimeout(checkIndexer, 5000);
         } else {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fa-solid fa-play"></i> Sync New Files';
+            btn.innerHTML = '<i class="fa-solid fa-play"></i> Sync All Channels';
+            btn.classList.replace('btn-danger', 'btn-primary');
+            if (wipeBtn) wipeBtn.disabled = false;
             lbl.textContent = "IDLE";
             lbl.style.color = "var(--text-sec)";
         }
     } catch (e) {}
 }
 
-async function startIndexer() {
-    if (!confirm("Sync new files? This will pull only the new files added since the last scan for ALL channels.")) return;
-    await fetch('/api/admin/global/index/start', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({})
-    });
-    checkIndexer();
+async function toggleIndexer() {
+    if (isIndexerRunning) {
+        if (!confirm("Abort the current sync? It will save its progress safely.")) return;
+        const btn = document.getElementById('btn-index');
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Stopping...';
+        await fetch('/api/admin/global/index/stop', {method: 'POST'});
+        setTimeout(checkIndexer, 2000);
+    } else {
+        if (!confirm("Sync new files? This will pull only the new files added since the last scan for ALL channels.")) return;
+        await fetch('/api/admin/global/index/start', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({})
+        });
+        checkIndexer();
+    }
 }
 
-async function syncChannel(chatId) {
-    if (!confirm(`Sync new files for channel ${chatId}?`)) return;
-    await fetch('/api/admin/global/index/start', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({chat_id: chatId})
-    });
+async function wipeAndRescan() {
+    if (!confirm('WARNING: This will completely WIPE your Global Database (all files, metadata, catalogs, and sync states) and start a fresh scan from scratch. Are you absolutely sure?')) return;
+    
+    const btn = document.getElementById('btn-wipe-rescan');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Wiping...'; }
+    
+    await fetch('/api/admin/global/wipe', { method: 'POST' });
+    await fetch('/api/admin/global/index/start', {method: 'POST'});
+    
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-skull-crossbones"></i> Wipe DB'; }
+    
+    alert("Database completely wiped! A fresh background scan has been started.");
+    if(currentActiveCallback) currentActiveCallback();
+    loadUnindexedBadge();
     checkIndexer();
 }
 
@@ -363,6 +376,7 @@ async function loadData() {
         document.getElementById('stat-catalogs').textContent = (data.catalogs || []).length;
         loadUnindexedBadge();
         
+        // Catalogs
         const catList = document.getElementById('catalog-list');
         catList.innerHTML = '';
         if (data.catalogs.length === 0) {
@@ -379,26 +393,7 @@ async function loadData() {
                 </tr>`;
             });
         }
-        
-        const fileList = document.getElementById('file-list');
-        fileList.innerHTML = '';
-        if (data.recent_files.length === 0) {
-            fileList.innerHTML = '<tr><td colspan="4" style="text-align:center;">No files found.</td></tr>';
-        } else {
-            data.recent_files.forEach(f => {
-                fileList.innerHTML += `<tr>
-                    <td><div style="max-width:300px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(f.filename)}">${escapeHtml(f.filename)}</div></td>
-                    <td>${f.size_str || '0 MB'}</td>
-                    <td>${f.catalog || '-'}</td>
-                    <td>
-                        <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteGlobalFile('${f._id}')">Delete</button>
-                    </td>
-                </tr>`;
-            });
-        }
-    } catch (e) {
-        console.error(e);
-    }
+    } catch (e) { console.error(e); }
 }
 
 async function loadUnindexedBadge() {
@@ -415,29 +410,37 @@ async function loadUnindexedBadge() {
 }
 
 /* --- Channels View --- */
-
 async function loadChannels() {
     const list = document.getElementById('channels-list');
-    list.innerHTML = '<tr><td colspan="4" style="text-align:center;"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
+    list.innerHTML = '<tr><td colspan="5" style="text-align:center;"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
     try {
         const res = await fetch('/api/admin/global/channels');
         const data = await res.json();
         list.innerHTML = '';
         if(data.channels.length === 0) {
-            list.innerHTML = '<tr><td colspan="4" style="text-align:center;">No channels found.</td></tr>';
+            list.innerHTML = '<tr><td colspan="5" style="text-align:center;">No channels found.</td></tr>';
         } else {
             data.channels.forEach(c => {
                 list.innerHTML += `<tr>
-                    <td><strong>${escapeHtml(c.name)}</strong> <span style="font-size:0.8rem; color:var(--text-sec);">(${c.chat_id})</span></td>
+                    <td><strong>${escapeHtml(c.name)}</strong> <span style="font-size:0.8rem; color:var(--text-sec);"><br>${c.chat_id}</span></td>
                     <td><a href="#" onclick="openChannelFiles('${c.chat_id}', '${escapeHtml(c.name)}', 'indexed'); return false;" style="color:var(--primary); font-weight:bold; text-decoration:underline;">${c.indexed}</a></td>
                     <td><a href="#" onclick="openChannelFiles('${c.chat_id}', '${escapeHtml(c.name)}', 'unindexed'); return false;" style="color:#ef4444; font-weight:bold; text-decoration:underline;">${c.unindexed}</a></td>
                     <td>${c.total}</td>
+                    <td><button class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="syncChannel('${c.chat_id}')"><i class="fa-solid fa-rotate"></i> Sync</button></td>
                 </tr>`;
             });
         }
-    } catch (e) {
-        console.error(e);
-    }
+    } catch (e) { console.error(e); }
+}
+
+async function syncChannel(chatId) {
+    if (!confirm(`Sync new files for channel ${chatId}?`)) return;
+    await fetch('/api/admin/global/index/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({chat_id: chatId})
+    });
+    checkIndexer();
 }
 
 function openChannelFiles(chatId, chatName, filter) {
@@ -456,6 +459,20 @@ function setChannelFilter(filter) {
     document.getElementById(`btn-filter-${filter}`).classList.replace('btn-ghost', 'btn-primary');
     cfPage = 1;
     loadChannelFiles();
+}
+
+function toggleAllCf(source) {
+    const checkboxes = document.querySelectorAll('.cf-cb');
+    checkboxes.forEach(cb => cb.checked = source.checked);
+}
+
+function showBatchMapModalCf() {
+    const checkboxes = document.querySelectorAll('.cf-cb:checked');
+    if (checkboxes.length === 0) return alert("Select at least one file to map.");
+    isBatchMap = true;
+    mappingFileId = Array.from(checkboxes).map(cb => cb.value);
+    document.getElementById('map-filename').textContent = `Batch Mapping ${checkboxes.length} file(s) - episodes will be auto-extracted.`;
+    document.getElementById('map-modal').style.display = 'flex';
 }
 
 async function loadChannelFiles() {
@@ -499,9 +516,7 @@ async function loadChannelFiles() {
                 </tr>`;
             });
         }
-    } catch (e) {
-        console.error(e);
-    }
+    } catch (e) { console.error(e); }
 }
 
 function changeCfPage(delta) {
@@ -509,36 +524,71 @@ function changeCfPage(delta) {
     loadChannelFiles();
 }
 
-function toggleAllCf(source) {
-    const checkboxes = document.querySelectorAll('.cf-cb');
-    checkboxes.forEach(cb => cb.checked = source.checked);
+/* --- Catalog Drilldown View --- */
+async function openCatalogView(catId, catName) {
+    currentCatalog = catId;
+    currentPage = 1;
+    switchView('catalog');
+    document.getElementById('cat-title').textContent = `${catName} Items`;
+    await loadCatalogPage();
+    currentActiveCallback = loadCatalogPage;
 }
 
-function showBatchMapModalCf() {
-    const checkboxes = document.querySelectorAll('.cf-cb:checked');
-    if (checkboxes.length === 0) return alert("Select at least one file to map.");
-    isBatchMap = true;
-    mappingFileId = Array.from(checkboxes).map(cb => cb.value);
-    document.getElementById('map-filename').textContent = `Batch Mapping ${checkboxes.length} file(s) - episodes will be auto-extracted.`;
-    document.getElementById('map-modal').style.display = 'flex';
+async function loadCatalogPage() {
+    const list = document.getElementById('cat-items-list');
+    list.innerHTML = '<tr><td colspan="4" style="text-align:center;"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
+    
+    try {
+        const res = await fetch(`/api/admin/global/files/catalog/${currentCatalog}?page=${currentPage}`);
+        const data = await res.json();
+        
+        totalPages = data.total_pages;
+        document.getElementById('page-info').textContent = currentPage;
+        document.getElementById('total-pages-info').textContent = totalPages;
+        document.getElementById('btn-prev').disabled = currentPage <= 1;
+        document.getElementById('btn-next').disabled = currentPage >= totalPages;
+        
+        list.innerHTML = '';
+        if (data.items.length === 0) {
+            list.innerHTML = '<tr><td colspan="4" style="text-align:center;">No items found.</td></tr>';
+        } else {
+            data.items.forEach(item => {
+                list.innerHTML += `<tr>
+                    <td>
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <img src="${item.poster || ''}" style="width:30px; height:45px; object-fit:cover; border-radius:4px; background:var(--surface);">
+                            <strong>${escapeHtml(item.title)}</strong>
+                        </div>
+                    </td>
+                    <td>${item.year || '-'}</td>
+                    <td><a href="#" onclick="openMetaFilesView('${item._id}', '${escapeHtml(item.title)}'); return false;" style="color:var(--primary); font-weight:bold; text-decoration:underline;">${item.file_count || 0} files</a></td>
+                    <td>
+                        <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteMeta('${item._id}')">Remove</button>
+                    </td>
+                </tr>`;
+            });
+        }
+    } catch (e) { console.error(e); }
 }
 
+function changePage(delta) {
+    currentPage += delta;
+    loadCatalogPage();
+}
 
+/* --- Meta Files Drilldown View --- */
 let currentMetaId = null;
 
 async function openMetaFilesView(metaId, metaTitle) {
     currentMetaId = metaId;
-    document.getElementById('view-catalog').style.display = 'none';
-    document.getElementById('view-meta-files').style.display = 'block';
+    switchView('meta-files');
     document.getElementById('meta-files-title').textContent = `Files for: ${metaTitle}`;
     await loadMetaFiles();
 }
 
 function closeMetaFilesView() {
     currentMetaId = null;
-    document.getElementById('view-meta-files').style.display = 'none';
-    document.getElementById('view-catalog').style.display = 'block';
-    loadCatalogPage(); // reload to update counts
+    switchView('catalog');
 }
 
 async function loadMetaFiles() {
@@ -569,79 +619,15 @@ async function loadMetaFiles() {
                     <td>${item.size_str || '0 MB'}</td>
                     <td><span class="badge" style="background:var(--surface-3);color:var(--text);">${seInfo}</span></td>
                     <td>
-                        <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteMetaFile('${item._id}')"><i class="fa-solid fa-trash"></i></button>
+                        <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteGlobalFile('${item._id}', true)"><i class="fa-solid fa-trash"></i></button>
                     </td>
                 </tr>`;
             });
         }
-    } catch (e) {
-        console.error(e);
-    }
+    } catch (e) { console.error(e); }
 }
 
-async function deleteMetaFile(id) {
-    if (!confirm('Delete this mapped file?')) return;
-    await fetch(`/api/admin/global/files/${id}`, { method: 'DELETE' });
-    await loadMetaFiles();
-}
-
-/* --- Catalog Drilldown View --- */
-
-async function openCatalogView(catId, catName) {
-    currentCatalog = catId;
-    currentPage = 1;
-    document.getElementById('view-dashboard').style.display = 'none';
-    document.getElementById('view-catalog').style.display = 'block';
-    document.getElementById('cat-title').textContent = `${catName} Items`;
-    await loadCatalogPage();
-    currentActiveCallback = loadCatalogPage;
-}
-
-async function loadCatalogPage() {
-    const list = document.getElementById('cat-items-list');
-    list.innerHTML = '<tr><td colspan="4" style="text-align:center;"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
-    
-    try {
-        const res = await fetch(`/api/admin/global/files/catalog/${currentCatalog}?page=${currentPage}`);
-        const data = await res.json();
-        
-        totalPages = data.total_pages;
-        document.getElementById('page-info').textContent = `Page ${currentPage} of ${totalPages}`;
-        document.getElementById('btn-prev').disabled = currentPage <= 1;
-        document.getElementById('btn-next').disabled = currentPage >= totalPages;
-        
-        list.innerHTML = '';
-        if (data.items.length === 0) {
-            list.innerHTML = '<tr><td colspan="4" style="text-align:center;">No items found.</td></tr>';
-        } else {
-            data.items.forEach(item => {
-                list.innerHTML += `<tr>
-                    <td>
-                        <div style="display:flex; align-items:center; gap:10px;">
-                            <img src="${item.poster || ''}" style="width:30px; height:45px; object-fit:cover; border-radius:4px; background:var(--surface);">
-                            <strong>${escapeHtml(item.title)}</strong>
-                        </div>
-                    </td>
-                    <td>${item.year || '-'}</td>
-                    <td><a href="#" onclick="openMetaFilesView('${item._id}', '${escapeHtml(item.title)}'); return false;" style="color:var(--primary); font-weight:bold; text-decoration:underline;">${item.file_count || 0} files</a></td>
-                    <td>
-                        <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteMeta('${item._id}')">Remove</button>
-                    </td>
-                </tr>`;
-            });
-        }
-    } catch (e) {
-        console.error(e);
-    }
-}
-
-function changePage(delta) {
-    currentPage += delta;
-    loadCatalogPage();
-}
-
-/* --- Unindexed View --- */
-
+/* --- Unindexed Queue View --- */
 function toggleAllUnidx(source) {
     const checkboxes = document.querySelectorAll('.unidx-cb');
     checkboxes.forEach(cb => cb.checked = source.checked);
@@ -667,7 +653,7 @@ function showBatchMapModal() {
 
 async function loadUnindexedPage() {
     const search = document.getElementById('unidx-search') ? document.getElementById('unidx-search').value.trim() : "";
-    if (document.getElementById('unidx-select-all')) document.getElementById('unidx-select-all').checked = false;
+    if(document.getElementById('unidx-select-all')) document.getElementById('unidx-select-all').checked = false;
     const list = document.getElementById('unidx-list');
     list.innerHTML = '<tr><td colspan="5" style="text-align:center;"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
     
@@ -676,14 +662,14 @@ async function loadUnindexedPage() {
         const data = await res.json();
         
         unidxTotalPages = data.total_pages;
-        if (document.getElementById('unidx-total-pages')) document.getElementById('unidx-total-pages').textContent = unidxTotalPages;
-        if (document.getElementById('unidx-page-input')) document.getElementById('unidx-page-input').value = unidxPage;
-        if (document.getElementById('unidx-btn-prev')) document.getElementById('unidx-btn-prev').disabled = unidxPage <= 1;
-        if (document.getElementById('unidx-btn-next')) document.getElementById('unidx-btn-next').disabled = unidxPage >= unidxTotalPages;
+        if(document.getElementById('unidx-total-pages')) document.getElementById('unidx-total-pages').textContent = unidxTotalPages;
+        if(document.getElementById('unidx-page-input')) document.getElementById('unidx-page-input').value = unidxPage;
+        if(document.getElementById('unidx-btn-prev')) document.getElementById('unidx-btn-prev').disabled = unidxPage <= 1;
+        if(document.getElementById('unidx-btn-next')) document.getElementById('unidx-btn-next').disabled = unidxPage >= unidxTotalPages;
         
         list.innerHTML = '';
         if (data.items.length === 0) {
-            list.innerHTML = '<tr><td colspan="5" style="text-align:center;">No unindexed files.</td></tr>';
+            list.innerHTML = '<tr><td colspan="5" style="text-align:center;">No unindexed files found.</td></tr>';
         } else {
             data.items.forEach(item => {
                 const escFilename = escapeHtml(item.filename);
@@ -702,9 +688,7 @@ async function loadUnindexedPage() {
                 </tr>`;
             });
         }
-    } catch (e) {
-        console.error(e);
-    }
+    } catch (e) { console.error(e); }
 }
 
 function changeUnidxPage(delta) {
@@ -716,6 +700,7 @@ function changeUnidxPage(delta) {
 
 let mappingFileId = null;
 function showMapModal(fileId, filename) {
+    isBatchMap = false;
     mappingFileId = fileId;
     document.getElementById('map-filename').textContent = filename;
     document.getElementById('map-modal').style.display = 'flex';
@@ -773,16 +758,20 @@ async function deleteCatalog(id) {
     if(currentActiveCallback) currentActiveCallback();
 }
 
-async function deleteGlobalFile(id) {
+async function deleteGlobalFile(id, isMetaView = false) {
     if (!confirm('Delete this file?')) return;
     await fetch(`/api/admin/global/files/${id}`, { method: 'DELETE' });
-    if(currentActiveCallback) currentActiveCallback();
+    if (isMetaView) {
+        await loadMetaFiles();
+    } else if(currentActiveCallback) {
+        currentActiveCallback();
+    }
     loadUnindexedBadge();
 }
 
-async function clearAllFiles() {
-    if (!confirm('Are you absolutely sure you want to delete ALL indexed files in the Global Search DB?')) return;
-    await fetch(`/api/admin/global/files`, { method: 'DELETE' });
+async function deleteUnindexed(id) {
+    if (!confirm('Remove this file from the unindexed queue?')) return;
+    await fetch(`/api/admin/global/unindexed/${id}`, { method: 'DELETE' });
     if(currentActiveCallback) currentActiveCallback();
     loadUnindexedBadge();
 }
