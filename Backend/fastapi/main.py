@@ -806,12 +806,14 @@ async def start_global_index(request: Request, _: bool = Depends(require_auth)):
     try:
         payload = await request.json()
         target_chat_id = payload.get("chat_id")
+        force_historic = payload.get("force_historic", False)
     except:
         target_chat_id = None
+        force_historic = False
         
     from Backend import db
     import asyncio
-    asyncio.create_task(global_indexer.run_global_indexer(db, target_chat_id))
+    asyncio.create_task(global_indexer.run_global_indexer(db, target_chat_id, force_historic))
     return {"status": "success"}
 
 @app.post("/api/admin/global/index/stop")

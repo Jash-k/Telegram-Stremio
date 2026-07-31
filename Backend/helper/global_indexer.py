@@ -120,7 +120,7 @@ async def _process_message(db, message, chat_id):
     await db.global_db["files"].update_one({"_id": file_id}, {"$set": file_data}, upsert=True)
     await db.global_db["unindexed"].delete_one({"_id": file_id})
 
-async def run_global_indexer(db, target_chat_id: int = None):
+async def run_global_indexer(db, target_chat_id: int = None, force_historic: bool = False):
     global _INDEXER_RUNNING
     if _INDEXER_RUNNING:
         LOGGER.info("[GLOBAL INDEXER] Already running.")
@@ -152,7 +152,7 @@ async def run_global_indexer(db, target_chat_id: int = None):
                     sync_key = f"sync_{chat_id}_{msg_filter.name}"
                     sync_state = await db.global_db["state"].find_one({"_id": sync_key}) or {}
                     
-                    historic_done = sync_state.get("historic_done", False)
+                    historic_done = False if force_historic else sync_state.get("historic_done", False)
                     last_id = sync_state.get("last_id", 0)
                     offset_id = sync_state.get("historic_offset_id", 0)
                     
@@ -162,9 +162,16 @@ async def run_global_indexer(db, target_chat_id: int = None):
                         LOGGER.info(f"[INDEXER] {chat_id} ({msg_filter.name}) - Historic scan from offset {offset_id} (last seen {last_id})")
                         highest_seen = last_id
                         try:
-                            async for msg in Userbot.search_messages(chat_id, filter=msg_filter, offset_id=offset_id):
+                            # Use get_chat_history to walk perfectly backwards from offset_id
+                            async for msg in Userbot.get_chat_history(chat_id, offset_id=offset_id):
                                 if not _INDEXER_RUNNING: break
                                 if msg.id > highest_seen: highest_seen = msg.id
+                                
+                                # Manually apply the filter (since get_chat_history gets everything)
+                                if msg_filter == enums.MessagesFilter.VIDEO and not getattr(msg, "video", None):
+                                    continue
+                                if msg_filter == enums.MessagesFilter.DOCUMENT and not getattr(msg, "document", None):
+                                    continue
                                     
                                 await _process_message(db, msg, chat_id)
                                 count += 1
@@ -191,6 +198,7 @@ async def run_global_indexer(db, target_chat_id: int = None):
                         LOGGER.info(f"[INDEXER] {chat_id} ({msg_filter.name}) - Syncing new files (Newer than {last_id})")
                         highest_seen = last_id
                         try:
+                            # Use search_messages to get only newest filtered
                             async for msg in Userbot.search_messages(chat_id, filter=msg_filter):
                                 if not _INDEXER_RUNNING: break
                                 if msg.id <= last_id: break

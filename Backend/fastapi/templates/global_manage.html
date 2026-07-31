@@ -437,12 +437,13 @@ async function loadChannels() {
     } catch (e) { console.error(e); }
 }
 
-async function syncChannel(chatId) {
-    if (!confirm(`Sync new files for channel ${chatId}?`)) return;
+async function syncChannel(chatId, historic) {
+    const msg = historic ? `Force a deep historic scan for channel ${chatId}? This will scan from the newest file backwards to the beginning of time.` : `Sync new files for channel ${chatId}?`;
+    if (!confirm(msg)) return;
     await fetch('/api/admin/global/index/start', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({chat_id: chatId})
+        body: JSON.stringify({chat_id: chatId, force_historic: historic})
     });
     checkIndexer();
 }
