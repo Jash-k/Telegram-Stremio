@@ -532,13 +532,18 @@ def _parse_and_validate(filename: str, expected_title: str, expected_year: Optio
 
 
 def _video_filename(message) -> Optional[str]:
+    name = None
     if message.video:
-        return (message.caption or "").strip() or getattr(message.video, "file_name", None) or "video.mkv"
-    if message.document:
+        name = (message.caption or "").strip() or getattr(message.video, "file_name", None) or "video.mkv"
+    elif message.document:
         mime = message.document.mime_type or ""
-        name = message.document.file_name
-        if mime.startswith("video/") or (name and name.lower().endswith(_VIDEO_EXTS)):
-            return (message.caption or "").strip() or name or "video.mkv"
+        doc_name = message.document.file_name
+        if mime.startswith("video/") or (doc_name and doc_name.lower().endswith(_VIDEO_EXTS)):
+            name = (message.caption or "").strip() or doc_name or "video.mkv"
+            
+    if name:
+        from Backend.helper.split_files import clean_filename
+        return clean_filename(name)
     return None
 
 

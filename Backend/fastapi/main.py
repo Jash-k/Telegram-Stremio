@@ -893,8 +893,9 @@ async def map_any_file(file_id: str, payload: dict, _: bool = Depends(require_au
     
     from Backend.helper.global_indexer import determine_catalog
     import PTN
+    from Backend.helper.split_files import clean_filename
     try:
-        parsed = PTN.parse(filename)
+        parsed = PTN.parse(clean_filename(filename))
     except:
         parsed = {}
     catalog = determine_catalog(parsed, details, media_type, filename)

@@ -88,3 +88,12 @@ def strip_part_suffix(filename: str) -> str:
 
     start, end, _part_num, ext = match
     return (name[:start] + '.' + ext) if ext else (name[:start] + name[end:])
+
+def clean_filename(name: str) -> str:
+    if not name: return ""
+    import re
+    name = re.sub(r'https?://[^\s]+', '', name)
+    name = re.sub(r'[🚀➠🔗✅🔥📥▶️].*$', '', name)
+    name = re.sub(r'(?i)(?:watch|download)\s*link.*$', '', name)
+    name = re.sub(r'^(?:@[a-zA-Z0-9_]+|www\.[a-zA-Z0-9_.-]+)\s*[-_:]*\s*', '', name, flags=re.IGNORECASE)
+    return name.strip()

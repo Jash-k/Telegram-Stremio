@@ -79,7 +79,7 @@ async def _process_message(db, message, chat_id):
     tmdb_type = "tv" if media_type == "series" else "movie" 
     
     tmdb_res = await safe_tmdb_search(title, tmdb_type, year)
-    if not tmdb_res:
+    if not tmdb_res and year is not None:
         tmdb_res = await safe_tmdb_search(title, tmdb_type, None)
         
     if not tmdb_res:
@@ -162,21 +162,26 @@ async def run_global_indexer(db, target_chat_id: int = None, force_historic: boo
                         LOGGER.info(f"[INDEXER] {chat_id} ({msg_filter.name}) - Historic scan from offset {offset_id} (last seen {last_id})")
                         highest_seen = last_id
                         try:
-                            # Use get_chat_history to walk perfectly backwards from offset_id
-                            async for msg in Userbot.get_chat_history(chat_id, offset_id=offset_id):
+                            # Use search_messages for blazing fast fetching, but we skip messages we already processed 
+                            # via the historic_offset_id check.
+                            fetched_count = 0
+                            async for msg in Userbot.search_messages(chat_id, filter=msg_filter):
                                 if not _INDEXER_RUNNING: break
-                                if msg.id > highest_seen: highest_seen = msg.id
                                 
-                                # Manually apply the filter (since get_chat_history gets everything)
-                                if msg_filter == enums.MessagesFilter.VIDEO and not getattr(msg, "video", None):
+                                # In Pyrogram, search_messages goes newest to oldest.
+                                # If we are resuming a historic scan, we skip until we reach the offset we left off at.
+                                if offset_id > 0 and msg.id >= offset_id:
                                     continue
-                                if msg_filter == enums.MessagesFilter.DOCUMENT and not getattr(msg, "document", None):
-                                    continue
+                                    
+                                if msg.id > highest_seen: 
+                                    highest_seen = msg.id
                                     
                                 await _process_message(db, msg, chat_id)
                                 count += 1
+                                fetched_count += 1
                                 
-                                if count % 50 == 0:
+                                # Periodically save our reverse checkpoint
+                                if fetched_count % 50 == 0:
                                     await db.global_db["state"].update_one(
                                         {"_id": sync_key}, 
                                         {"$set": {"historic_offset_id": msg.id, "last_id": highest_seen}}, 
@@ -198,7 +203,6 @@ async def run_global_indexer(db, target_chat_id: int = None, force_historic: boo
                         LOGGER.info(f"[INDEXER] {chat_id} ({msg_filter.name}) - Syncing new files (Newer than {last_id})")
                         highest_seen = last_id
                         try:
-                            # Use search_messages to get only newest filtered
                             async for msg in Userbot.search_messages(chat_id, filter=msg_filter):
                                 if not _INDEXER_RUNNING: break
                                 if msg.id <= last_id: break
