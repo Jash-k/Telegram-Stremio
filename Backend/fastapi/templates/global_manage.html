@@ -54,7 +54,7 @@
         <div class="stat-lbl">Global Catalogs</div>
     </div>
     <div class="stat-card" style="border: 2px dashed var(--primary); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.5rem;">
-        <button id="btn-index" onclick="startIndexer()" class="btn btn-primary" style="width: 100%;"><i class="fa-solid fa-play"></i> Sync New Files</button>
+        <button id="btn-index" onclick="toggleIndexer()" class="btn btn-primary" style="width: 100%;"><i class="fa-solid fa-play"></i> Sync New Files</button>
         <span id="lbl-index-status" style="font-size: 0.8rem; font-weight: 600; color: var(--text-sec);">IDLE</span>
     </div>
 </div>
@@ -144,7 +144,7 @@
     <div class="table-wrap">
         <table>
             <thead>
-                <tr><th>Channel</th><th>Indexed Files</th><th>Unindexed Files</th><th>Total Files</th></tr>
+                <tr><th>Channel</th><th>Indexed</th><th>Unindexed</th><th>Total</th><th>Actions</th></tr>
             </thead>
             <tbody id="channels-list">
                 <tr><td colspan="4" style="text-align:center;">Loading...</td></tr>
@@ -335,8 +335,22 @@ async function checkIndexer() {
 }
 
 async function startIndexer() {
-    if (!confirm("Sync new files? This will pull only the new files added since the last scan and categorize them.")) return;
-    await fetch('/api/admin/global/index/start', {method: 'POST'});
+    if (!confirm("Sync new files? This will pull only the new files added since the last scan for ALL channels.")) return;
+    await fetch('/api/admin/global/index/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({})
+    });
+    checkIndexer();
+}
+
+async function syncChannel(chatId) {
+    if (!confirm(`Sync new files for channel ${chatId}?`)) return;
+    await fetch('/api/admin/global/index/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({chat_id: chatId})
+    });
     checkIndexer();
 }
 

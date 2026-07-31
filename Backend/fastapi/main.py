@@ -798,14 +798,29 @@ async def delete_all_global_files(_: bool = Depends(require_auth)):
     return {"status": "success"}
 
 @app.post("/api/admin/global/index/start")
-async def start_global_index(_: bool = Depends(require_auth)):
-    from Backend.helper.global_indexer import run_global_indexer, _INDEXER_RUNNING
-    if _INDEXER_RUNNING:
+async def start_global_index(request: Request, _: bool = Depends(require_auth)):
+    from Backend.helper import global_indexer
+    if global_indexer._INDEXER_RUNNING:
         return {"status": "error", "message": "Already running"}
+        
+    try:
+        payload = await request.json()
+        target_chat_id = payload.get("chat_id")
+    except:
+        target_chat_id = None
+        
     from Backend import db
     import asyncio
-    asyncio.create_task(run_global_indexer(db))
+    asyncio.create_task(global_indexer.run_global_indexer(db, target_chat_id))
     return {"status": "success"}
+
+@app.post("/api/admin/global/index/stop")
+async def stop_global_index(_: bool = Depends(require_auth)):
+    from Backend.helper import global_indexer
+    if global_indexer._INDEXER_RUNNING:
+        global_indexer._INDEXER_RUNNING = False
+        return {"status": "success", "message": "Aborting..."}
+    return {"status": "error", "message": "Not running"}
 
 @app.get("/api/admin/global/index/status")
 async def status_global_index(_: bool = Depends(require_auth)):
