@@ -942,7 +942,15 @@ async def map_any_file(file_id: str, payload: dict, _: bool = Depends(require_au
 @app.get("/api/admin/global/channels")
 async def get_global_channels(_: bool = Depends(require_auth)):
     from Backend import db
-    if getattr(db, "global_db", None) is None: return {"channels": []}
+    from Backend.helper.settings_manager import SettingsManager
+    from Backend.helper.global_search import _resolve_channel_ids, _get_chat_title
+    from Backend.pyrofork.bot import Userbot
+    
+    settings = SettingsManager.current()
+    target_ids = _resolve_channel_ids(settings.global_search_channels)
+    
+    if getattr(db, "global_db", None) is None: 
+        return {"channels": []}
     
     idx_cursor = db.global_db["files"].aggregate([{"$group": {"_id": "$chat_id", "count": {"$sum": 1}}}])
     idx_counts = {c["_id"]: c["count"] async for c in idx_cursor}
@@ -950,22 +958,39 @@ async def get_global_channels(_: bool = Depends(require_auth)):
     unidx_cursor = db.global_db["unindexed"].aggregate([{"$group": {"_id": "$chat_id", "count": {"$sum": 1}}}])
     unidx_counts = {c["_id"]: c["count"] async for c in unidx_cursor}
     
-    all_chats = set(idx_counts.keys()).union(set(unidx_counts.keys()))
+    # Also get state to check if they have a last_id
+    state_cursor = db.global_db["state"].find()
+    states = [s async for s in state_cursor]
+    scanned_chats = set()
+    for s in states:
+        if s["_id"].startswith("sync_"):
+            try:
+                scanned_chats.add(int(s["_id"].split("_")[1]))
+            except:
+                pass
     
     channels = []
-    for cid in all_chats:
+    for cid in target_ids:
+        # It's scanned if it has state OR has indexed/unindexed files
+        is_scanned = cid in scanned_chats or cid in idx_counts or cid in unidx_counts
+        
+        idx = idx_counts.get(cid, 0)
+        unidx = unidx_counts.get(cid, 0)
+        
         channels.append({
             "chat_id": cid,
-            "indexed": idx_counts.get(cid, 0),
-            "unindexed": unidx_counts.get(cid, 0),
-            "total": idx_counts.get(cid, 0) + unidx_counts.get(cid, 0)
+            "indexed": idx if is_scanned else "--",
+            "unindexed": unidx if is_scanned else "--",
+            "total": (idx + unidx) if is_scanned else "--",
+            "is_scanned": is_scanned
         })
         
-    from Backend.helper.global_search import _get_chat_title
-    from Backend.pyrofork.bot import Userbot
     for c in channels:
         if Userbot:
-            c["name"] = await _get_chat_title(Userbot, c["chat_id"])
+            try:
+                c["name"] = await _get_chat_title(Userbot, c["chat_id"])
+            except:
+                c["name"] = str(c["chat_id"])
         else:
             c["name"] = str(c["chat_id"])
             

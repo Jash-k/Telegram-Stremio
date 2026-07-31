@@ -418,14 +418,18 @@ async function loadChannels() {
         const data = await res.json();
         list.innerHTML = '';
         if(data.channels.length === 0) {
-            list.innerHTML = '<tr><td colspan="5" style="text-align:center;">No channels found.</td></tr>';
+            list.innerHTML = '<tr><td colspan="5" style="text-align:center;">No channels found. Add them in Settings.</td></tr>';
         } else {
             data.channels.forEach(c => {
+                let idxHTML = c.is_scanned ? `<a href="#" onclick="openChannelFiles('${c.chat_id}', '${escapeHtml(c.name)}', 'indexed'); return false;" style="color:var(--primary); font-weight:bold; text-decoration:underline;">${c.indexed}</a>` : '--';
+                let unidxHTML = c.is_scanned ? `<a href="#" onclick="openChannelFiles('${c.chat_id}', '${escapeHtml(c.name)}', 'unindexed'); return false;" style="color:#ef4444; font-weight:bold; text-decoration:underline;">${c.unindexed}</a>` : '--';
+                let totalHTML = c.is_scanned ? c.total : '--';
+                
                 list.innerHTML += `<tr>
                     <td><strong>${escapeHtml(c.name)}</strong> <span style="font-size:0.8rem; color:var(--text-sec);"><br>${c.chat_id}</span></td>
-                    <td><a href="#" onclick="openChannelFiles('${c.chat_id}', '${escapeHtml(c.name)}', 'indexed'); return false;" style="color:var(--primary); font-weight:bold; text-decoration:underline;">${c.indexed}</a></td>
-                    <td><a href="#" onclick="openChannelFiles('${c.chat_id}', '${escapeHtml(c.name)}', 'unindexed'); return false;" style="color:#ef4444; font-weight:bold; text-decoration:underline;">${c.unindexed}</a></td>
-                    <td>${c.total}</td>
+                    <td>${idxHTML}</td>
+                    <td>${unidxHTML}</td>
+                    <td>${totalHTML}</td>
                     <td><button class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="syncChannel('${c.chat_id}')"><i class="fa-solid fa-rotate"></i> Sync</button></td>
                 </tr>`;
             });
