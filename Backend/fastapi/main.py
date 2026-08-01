@@ -1293,4 +1293,4 @@ async def cleanup_global_db(_: bool = Depends(require_auth)):
             
     asyncio.create_task(run_cleanup())
         
-    return {"status": "success", "message": "Cleanup started in the background! Please wait a few minutes and refresh the page."} media groups!"}
+    return {"status": "success", "message": "Cleanup started in the background! Please wait a few minutes and refresh the page."}
