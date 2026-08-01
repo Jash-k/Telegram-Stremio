@@ -360,16 +360,17 @@ async function cleanupDatabase() {
     if (!confirm('This will scan all files and enforce the strict cleanup rules: remove 480p if HD exists, prefer HEVC/Tamil, limit to 3 copies per resolution. Are you sure?')) return;
     
     const btn = document.getElementById('btn-cleanup');
-    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Cleaning...'; }
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Starting Cleanup...'; }
     
     const res = await fetch('/api/admin/global/cleanup', { method: 'POST' });
     const data = await res.json();
     
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-broom"></i> Cleanup DB'; }
+    setTimeout(() => {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-broom"></i> Cleanup DB'; }
+    }, 2000);
     
     if (data.status === 'success') {
         alert(data.message);
-        loadData();
     } else {
         alert(`Error: ${data.message}`);
     }
@@ -379,15 +380,17 @@ async function migrateDatabase() {
     if (!confirm('This will scan all your existing database records, fetch missing TMDB ratings, and extract languages from the filenames to enable the new Dropdown Filters. Continue?')) return;
     
     const btn = document.getElementById('btn-migrate');
-    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Migrating...'; }
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Starting Migration...'; }
     
     const res = await fetch('/api/admin/global/migrate', { method: 'POST' });
     const data = await res.json();
     
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-wrench"></i> Migrate DB Data'; }
+    setTimeout(() => {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-wrench"></i> Migrate Metadata'; }
+    }, 2000);
     
     if (data.status === 'success') {
-        alert(`Migration complete! Successfully updated ${data.migrated} movies/shows.`);
+        alert(data.message);
     } else {
         alert(`Error: ${data.message}`);
     }
