@@ -38,9 +38,15 @@
     </div>
     <div class="stat-card" style="border: 2px dashed var(--primary); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.5rem;">
         <button id="btn-index" onclick="toggleIndexer()" class="btn btn-primary" style="width: 100%;"><i class="fa-solid fa-play"></i> Sync All Channels</button>
-        <button id="btn-wipe-rescan" onclick="wipeAndRescan()" class="btn btn-danger" style="width: 100%; background:#991b1b; border-color:#7f1d1d;"><i class="fa-solid fa-skull-crossbones"></i> Wipe DB</button>
         <span id="lbl-index-status" style="font-size: 0.8rem; font-weight: 600; color: var(--text-sec); margin-top:5px;">IDLE</span>
     </div>
+</div>
+
+<div style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:1.5rem; background: var(--card); padding: 1rem; border-radius: 12px; border: 1px solid var(--border); align-items:center;">
+    <strong style="color:var(--text-sec); font-size:0.9rem; margin-right:10px;">MAINTENANCE:</strong>
+    <button id="btn-cleanup" onclick="cleanupDatabase()" class="btn btn-primary" style="background:#8b5cf6; border-color:#6d28d9; padding: 0.4rem 0.8rem; font-size: 0.85rem;"><i class="fa-solid fa-broom"></i> Cleanup DB</button>
+    <button id="btn-migrate" onclick="migrateDatabase()" class="btn btn-primary" style="background:#0ea5e9; border-color:#0284c7; padding: 0.4rem 0.8rem; font-size: 0.85rem;"><i class="fa-solid fa-wrench"></i> Migrate Metadata</button>
+    <button id="btn-wipe-rescan" onclick="wipeAndRescan()" class="btn btn-danger" style="background:#991b1b; border-color:#7f1d1d; padding: 0.4rem 0.8rem; font-size: 0.85rem;"><i class="fa-solid fa-skull-crossbones"></i> Wipe Database</button>
 </div>
 
 <div style="display:flex; gap:10px; margin-bottom:1.5rem; overflow-x:auto;">
