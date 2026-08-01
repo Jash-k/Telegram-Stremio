@@ -915,9 +915,29 @@ async def map_any_file(file_id: str, payload: dict, _: bool = Depends(require_au
         "media_type": media_type,
         "catalog": catalog,
         "genres": [g.name for g in (getattr(details, "genres", None) or [])],
+        "rating": getattr(details, "vote_average", 0.0),
         "updated_at": __import__("time").time()
     }
-    await db.global_db["meta"].update_one({"_id": doc_id}, {"$set": update_data}, upsert=True)
+    
+    lang_map = {"tam": "Tamil", "tamil": "Tamil", "tel": "Telugu", "telugu": "Telugu", "hin": "Hindi", "hindi": "Hindi", "mal": "Malayalam", "malayalam": "Malayalam", "kan": "Kannada", "kannada": "Kannada", "eng": "English", "english": "English", "multi": "Multi"}
+    languages = []
+    import re
+    fname_lower = filename.lower()
+    for k, v in lang_map.items():
+        if re.search(rf'\b{k}\b', fname_lower):
+            if v not in languages:
+                languages.append(v)
+    if getattr(details, "original_language", "") == "ta" and "Tamil" not in languages:
+        languages.append("Tamil")
+        
+    await db.global_db["meta"].update_one(
+        {"_id": doc_id}, 
+        {
+            "$set": update_data,
+            "$addToSet": {"languages": {"$each": languages}}
+        }, 
+        upsert=True
+    )
     
     from Backend.helper.split_files import parse_combined_episodes
     combined = parse_combined_episodes(filename)
@@ -1143,9 +1163,30 @@ async def map_batch_files(payload: dict, _: bool = Depends(require_auth)):
             "description": details.overview,
             "media_type": media_type,
             "catalog": catalog,
-            "genres": [g.name for g in (getattr(details, "genres", None) or [])]
+            "genres": [g.name for g in (getattr(details, "genres", None) or [])],
+            "rating": getattr(details, "vote_average", 0.0),
+            "updated_at": __import__("time").time()
         }
-        await db.global_db["meta"].update_one({"_id": doc_id}, {"$set": update_data}, upsert=True)
+        
+        lang_map = {"tam": "Tamil", "tamil": "Tamil", "tel": "Telugu", "telugu": "Telugu", "hin": "Hindi", "hindi": "Hindi", "mal": "Malayalam", "malayalam": "Malayalam", "kan": "Kannada", "kannada": "Kannada", "eng": "English", "english": "English", "multi": "Multi"}
+        languages = []
+        import re
+        fname_lower = filename.lower()
+        for k, v in lang_map.items():
+            if re.search(rf'\b{k}\b', fname_lower):
+                if v not in languages:
+                    languages.append(v)
+        if getattr(details, "original_language", "") == "ta" and "Tamil" not in languages:
+            languages.append("Tamil")
+            
+        await db.global_db["meta"].update_one(
+            {"_id": doc_id}, 
+            {
+                "$set": update_data,
+                "$addToSet": {"languages": {"$each": languages}}
+            }, 
+            upsert=True
+        )
         
         combined = parse_combined_episodes(filename)
         new_file_data = {
@@ -1174,3 +1215,66 @@ async def get_global_meta_files(meta_id: str, _: bool = Depends(require_auth)):
     cursor = db.global_db["files"].find({"meta_id": meta_id}).sort([("season", 1), ("episode_start", 1)])
     items = [doc async for doc in cursor]
     return {"items": items}
+
+@app.post("/api/admin/global/migrate")
+async def migrate_global_db(_: bool = Depends(require_auth)):
+    from Backend import db
+    if getattr(db, "global_db", None) is None:
+        return {"status": "error", "message": "No global database configured."}
+        
+    cursor = db.global_db["meta"].find({})
+    count = 0
+    async for meta in cursor:
+        update_fields = {}
+        
+        # 1. Fetch TMDB rating if missing
+        if "rating" not in meta:
+            tmdb_id = meta.get("tmdb_id")
+            media_type = meta.get("media_type")
+            if tmdb_id and media_type:
+                from Backend.helper.metadata import _tmdb_details
+                tmdb_type = "tv" if media_type == "series" else "movie"
+                details = await _tmdb_details(tmdb_type, tmdb_id)
+                if details:
+                    update_fields["rating"] = getattr(details, "vote_average", 0.0)
+                    
+        # 2. Re-calculate languages from the raw filenames attached to this meta
+        if "languages" not in meta:
+            languages = set()
+            # If TMDB original language is Tamil, add it by default
+            if details and getattr(details, "original_language", "") == "ta":
+                languages.add("Tamil")
+                
+            # Scan all files attached to this meta for language tags
+            files_cursor = db.global_db["files"].find({"meta_id": meta["_id"]})
+            async for file_doc in files_cursor:
+                fname_lower = file_doc.get("filename", "").lower()
+                lang_map = {"tam": "Tamil", "tamil": "Tamil", "tel": "Telugu", "telugu": "Telugu", "hin": "Hindi", "hindi": "Hindi", "mal": "Malayalam", "malayalam": "Malayalam", "kan": "Kannada", "kannada": "Kannada", "eng": "English", "english": "English", "multi": "Multi"}
+                import re
+                for k, v in lang_map.items():
+                    if re.search(rf'\b{k}\b', fname_lower):
+                        languages.add(v)
+            
+            update_fields["languages"] = list(languages)
+            
+        if update_fields:
+            await db.global_db["meta"].update_one(
+                {"_id": meta["_id"]},
+                {"$set": update_fields}
+            )
+            count += 1
+            
+    return {"status": "success", "migrated": count}
+
+@app.post("/api/admin/global/cleanup")
+async def cleanup_global_db(_: bool = Depends(require_auth)):
+    from Backend import db
+    from Backend.helper.global_indexer import clean_meta_files
+    if getattr(db, "global_db", None) is None:
+        return {"status": "error", "message": "No global database configured."}
+        
+    meta_ids = await db.global_db["files"].distinct("meta_id")
+    for mid in meta_ids:
+        await clean_meta_files(db, mid)
+        
+    return {"status": "success", "message": f"Successfully enforced cleanup rules on {len(meta_ids)} media groups!"}

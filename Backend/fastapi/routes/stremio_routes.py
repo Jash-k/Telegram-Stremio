@@ -337,17 +337,25 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
 
         if getattr(db, "global_db", None) is not None:
             try:
+                # We only want to show catalogs that actually have items in them to prevent empty rows in Stremio!
+                counts_cursor = db.global_db["meta"].aggregate([{"$group": {"_id": "$catalog", "count": {"$sum": 1}}}])
+                counts = {c["_id"]: c["count"] async for c in counts_cursor}
+                
                 g_cats = await db.global_db["catalogs"].find().to_list(None)
                 for gc in g_cats:
-                    catalogs.append({
-                        "type": gc.get("type", "movie"),
-                        "id": f"global_{gc['_id']}",
-                        "name": gc.get("name", "Global Catalog"),
-                        "extra": [
-                            {"name": "search", "isRequired": False},
-                            {"name": "skip", "isRequired": False}
-                        ]
-                    })
+                    if counts.get(gc["_id"], 0) > 0:
+                        catalogs.append({
+                            "type": gc.get("type", "movie"),
+                            "id": f"global_{gc['_id']}",
+                            "name": gc.get("name", "Global Catalog"),
+                            "extra": [
+                                {"name": "search", "isRequired": False},
+                                {"name": "genre", "isRequired": False, "options": GENRES},
+                                {"name": "language", "isRequired": False, "options": ["Tamil", "Telugu", "Hindi", "Malayalam", "Kannada", "English", "Multi"]},
+                                {"name": "sort", "isRequired": False, "options": ["Latest Added", "Year: Newest", "Year: Oldest", "Highest Rated", "Title: A-Z"]},
+                                {"name": "skip", "isRequired": False}
+                            ]
+                        })
             except Exception as e:
                 LOGGER.error(f"Error appending global catalogs: {e}")
                 
@@ -446,6 +454,8 @@ async def get_catalog(token: str, media_type: str, id: str, extra: Optional[str]
 
     genre_filter = None
     search_query = None
+    language_filter = None
+    sort_filter = "Latest Added"
     stremio_skip = 0
 
     if extra:
@@ -455,6 +465,10 @@ async def get_catalog(token: str, media_type: str, id: str, extra: Optional[str]
                 genre_filter = unquote(param.removeprefix("genre="))
             elif param.startswith("search="):
                 search_query = unquote(param.removeprefix("search="))
+            elif param.startswith("language="):
+                language_filter = unquote(param.removeprefix("language="))
+            elif param.startswith("sort="):
+                sort_filter = unquote(param.removeprefix("sort="))
             elif param.startswith("skip="):
                 try:
                     stremio_skip = int(param.removeprefix("skip="))
@@ -477,9 +491,23 @@ async def get_catalog(token: str, media_type: str, id: str, extra: Optional[str]
             query = {"catalog": real_id}
             if search_query:
                 query["title"] = {"$regex": search_query, "$options": "i"}
+            if genre_filter:
+                query["genres"] = genre_filter
+            if language_filter:
+                query["languages"] = language_filter
+                
+            sort_logic = [("updated_at", -1), ("_id", -1)]
+            if sort_filter == "Year: Newest":
+                sort_logic = [("year", -1), ("_id", -1)]
+            elif sort_filter == "Year: Oldest":
+                sort_logic = [("year", 1), ("_id", 1)]
+            elif sort_filter == "Highest Rated":
+                sort_logic = [("rating", -1), ("_id", -1)]
+            elif sort_filter == "Title: A-Z":
+                sort_logic = [("title", 1), ("_id", 1)]
                 
             start_skip = (page - 1) * PAGE_SIZE
-            cursor = db.global_db["meta"].find(query).sort([("updated_at", -1), ("_id", -1)]).skip(start_skip).limit(PAGE_SIZE)
+            cursor = db.global_db["meta"].find(query).sort(sort_logic).skip(start_skip).limit(PAGE_SIZE)
             items = [doc async for doc in cursor]
             
             metas = []

@@ -104,9 +104,28 @@ async def _process_message(db, message, chat_id):
         "background": format_tmdb_image(details.backdrop_path, "original"),
         "description": details.overview, "media_type": media_type,
         "catalog": catalog, "genres": [g.name for g in (getattr(details, "genres", None) or [])],
+        "rating": getattr(details, "vote_average", 0.0),
         "updated_at": __import__("time").time()
     }
-    await db.global_db["meta"].update_one({"_id": doc_id}, {"$set": update_data}, upsert=True)
+    
+    lang_map = {"tam": "Tamil", "tamil": "Tamil", "tel": "Telugu", "telugu": "Telugu", "hin": "Hindi", "hindi": "Hindi", "mal": "Malayalam", "malayalam": "Malayalam", "kan": "Kannada", "kannada": "Kannada", "eng": "English", "english": "English", "multi": "Multi"}
+    languages = []
+    fname_lower = filename.lower()
+    for k, v in lang_map.items():
+        if re.search(rf'\b{k}\b', fname_lower):
+            if v not in languages:
+                languages.append(v)
+    if getattr(details, "original_language", "") == "ta" and "Tamil" not in languages:
+        languages.append("Tamil")
+        
+    await db.global_db["meta"].update_one(
+        {"_id": doc_id}, 
+        {
+            "$set": update_data,
+            "$addToSet": {"languages": {"$each": languages}}
+        }, 
+        upsert=True
+    )
     
     combined = parse_combined_episodes(filename)
     file_data = {
@@ -120,7 +139,107 @@ async def _process_message(db, message, chat_id):
     await db.global_db["files"].update_one({"_id": file_id}, {"$set": file_data}, upsert=True)
     await db.global_db["unindexed"].delete_one({"_id": file_id})
 
+
+async def clean_meta_files(db, meta_id: str):
+    cursor = db.global_db["files"].find({"meta_id": meta_id})
+    files = [f async for f in cursor]
+    if not files: return
+
+    from collections import defaultdict
+    import PTN
+    import re
+
+    # Group by season and episode so we only compare identical episodes
+    groups = defaultdict(list)
+    for f in files:
+        key = (f.get("season"), f.get("episode_start"), f.get("episode_end"))
+        groups[key].append(f)
+
+    to_delete = []
+
+    def get_res_val(res_str):
+        res_str = str(res_str or "").lower()
+        if "2160" in res_str or "4k" in res_str: return 2160
+        if "1440" in res_str or "2k" in res_str: return 1440
+        if "1080" in res_str: return 1080
+        if "720" in res_str: return 720
+        if "480" in res_str: return 480
+        if "360" in res_str: return 360
+        return 0
+
+    for key, group_files in groups.items():
+        enriched = []
+        has_high_res = False
+        for f in group_files:
+            try:
+                parsed = PTN.parse(f["filename"])
+            except:
+                parsed = {}
+            
+            res_val = get_res_val(parsed.get("resolution", f.get("quality", "")))
+            if res_val >= 720:
+                has_high_res = True
+            
+            fname_lower = f["filename"].lower()
+            lang_score = 0
+            if re.search(r'\b(tam|tamil)\b', fname_lower):
+                lang_score = 100
+            elif re.search(r'\bmulti\b', fname_lower):
+                lang_score = 50
+            
+            v_codec = str(parsed.get("codec", "")).lower()
+            codec_score = 0
+            if "265" in v_codec or "hevc" in v_codec: codec_score = 20
+            elif "264" in v_codec or "avc" in v_codec: codec_score = 10
+            
+            a_codec = str(parsed.get("audio", "")).lower()
+            audio_score = 0
+            if "dts" in a_codec or "dd" in a_codec or "ac3" in a_codec or "eac3" in a_codec or "dolby" in a_codec:
+                audio_score = 15
+            elif "aac" in a_codec:
+                audio_score = 10
+
+            total_score = lang_score + codec_score + audio_score
+            enriched.append({
+                "doc": f,
+                "res_val": res_val,
+                "lang_score": lang_score,
+                "score": total_score,
+                "size": f.get("size", 0)
+            })
+
+        # Rule 1: Drop 360p/480p if a 720p+ file exists for this episode
+        if has_high_res:
+            enriched = [e for e in enriched if e["res_val"] >= 720]
+
+        # Rule 2: If a Tamil specific file exists, strongly prioritize it over random unknown languages
+        if any(e["lang_score"] >= 100 for e in enriched):
+            enriched = [e for e in enriched if e["lang_score"] >= 50]
+
+        # Rule 3: Group by resolution and keep max 3 per resolution
+        res_groups = defaultdict(list)
+        for e in enriched:
+            res_groups[e["res_val"]].append(e)
+
+        keep_docs = []
+        for res_val, res_files in res_groups.items():
+            # Sort by score DESC, then size DESC
+            res_files.sort(key=lambda x: (x["score"], x["size"]), reverse=True)
+            # Keep top 3
+            kept = res_files[:3]
+            keep_docs.extend([k["doc"]["_id"] for k in kept])
+
+        for f in group_files:
+            if f["_id"] not in keep_docs:
+                to_delete.append(f["_id"])
+
+    if to_delete:
+        await db.global_db["files"].delete_many({"_id": {"$in": to_delete}})
+
 async def run_global_indexer(db, target_chat_id: int = None, force_historic: bool = False):
+    if getattr(db, "global_db", None) is not None:
+        await get_or_create_global_catalogs(db)
+
     global _INDEXER_RUNNING
     if _INDEXER_RUNNING:
         LOGGER.info("[GLOBAL INDEXER] Already running.")
@@ -137,7 +256,6 @@ async def run_global_indexer(db, target_chat_id: int = None, force_historic: boo
     _INDEXER_RUNNING = True
     LOGGER.info("[GLOBAL INDEXER] Started.")
     try:
-        await get_or_create_global_catalogs(db)
         
         if target_chat_id:
             target_ids = [target_chat_id]
