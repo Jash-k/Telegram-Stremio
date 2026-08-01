@@ -152,7 +152,16 @@ async def clean_meta_files(db, meta_id: str):
     # Group by season and episode so we only compare identical episodes
     groups = defaultdict(list)
     for f in files:
-        key = (f.get("season"), f.get("episode_start"), f.get("episode_end"))
+        def make_hashable(val):
+            if isinstance(val, list):
+                return tuple(val)
+            return val
+            
+        key = (
+            make_hashable(f.get("season")), 
+            make_hashable(f.get("episode_start")), 
+            make_hashable(f.get("episode_end"))
+        )
         groups[key].append(f)
 
     to_delete = []
