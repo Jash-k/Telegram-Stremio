@@ -1218,12 +1218,19 @@ async def get_global_meta_files(meta_id: str, _: bool = Depends(require_auth)):
 
 @app.post("/api/admin/global/migrate")
 async def migrate_global_db(_: bool = Depends(require_auth)):
+    global _MIGRATE_RUNNING
+    if _MIGRATE_RUNNING:
+        return {"status": "error", "message": "Migration is already running."}
+        
     from Backend import db
     import asyncio
     if getattr(db, "global_db", None) is None:
         return {"status": "error", "message": "No global database configured."}
         
+    _MIGRATE_RUNNING = True
+        
     async def run_migrate():
+        global _MIGRATE_RUNNING
         try:
             cursor = db.global_db["meta"].find({})
             async for meta in cursor:
@@ -1270,12 +1277,18 @@ async def migrate_global_db(_: bool = Depends(require_auth)):
                     )
         except Exception as e:
             print("Migrate Error:", e)
+        finally:
+            _MIGRATE_RUNNING = False
 
     asyncio.create_task(run_migrate())
-    return {"status": "success", "message": "Migration started in the background! Please wait a few minutes."}
+    return {"status": "success", "message": "Migration started in the background!"}
 
 @app.post("/api/admin/global/cleanup")
 async def cleanup_global_db(_: bool = Depends(require_auth)):
+    global _CLEANUP_RUNNING
+    if _CLEANUP_RUNNING:
+        return {"status": "error", "message": "Cleanup is already running."}
+        
     from Backend import db
     from Backend.helper.global_indexer import clean_meta_files
     import asyncio
@@ -1283,14 +1296,27 @@ async def cleanup_global_db(_: bool = Depends(require_auth)):
     if getattr(db, "global_db", None) is None:
         return {"status": "error", "message": "No global database configured."}
         
+    _CLEANUP_RUNNING = True
+        
     async def run_cleanup():
+        global _CLEANUP_RUNNING
         try:
             meta_ids = await db.global_db["files"].distinct("meta_id")
             for mid in meta_ids:
                 await clean_meta_files(db, mid)
         except Exception as e:
             print("Cleanup Error:", e)
+        finally:
+            _CLEANUP_RUNNING = False
             
     asyncio.create_task(run_cleanup())
         
-    return {"status": "success", "message": "Cleanup started in the background! Please wait a few minutes and refresh the page."}
+    return {"status": "success", "message": "Cleanup started in the background!"}
+
+@app.get("/api/admin/global/tasks/status")
+async def global_tasks_status(_: bool = Depends(require_auth)):
+    global _CLEANUP_RUNNING, _MIGRATE_RUNNING
+    return {
+        "cleanup_running": _CLEANUP_RUNNING,
+        "migrate_running": _MIGRATE_RUNNING
+    }

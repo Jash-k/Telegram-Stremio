@@ -44,9 +44,18 @@
 
 <div style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:1.5rem; background: var(--card); padding: 1rem; border-radius: 12px; border: 1px solid var(--border); align-items:center;">
     <strong style="color:var(--text-sec); font-size:0.9rem; margin-right:10px;">MAINTENANCE:</strong>
-    <button id="btn-cleanup" onclick="cleanupDatabase()" class="btn btn-primary" style="background:#8b5cf6; border-color:#6d28d9; padding: 0.4rem 0.8rem; font-size: 0.85rem;"><i class="fa-solid fa-broom"></i> Cleanup DB</button>
-    <button id="btn-migrate" onclick="migrateDatabase()" class="btn btn-primary" style="background:#0ea5e9; border-color:#0284c7; padding: 0.4rem 0.8rem; font-size: 0.85rem;"><i class="fa-solid fa-wrench"></i> Migrate Metadata</button>
-    <button id="btn-wipe-rescan" onclick="wipeAndRescan()" class="btn btn-danger" style="background:#991b1b; border-color:#7f1d1d; padding: 0.4rem 0.8rem; font-size: 0.85rem;"><i class="fa-solid fa-skull-crossbones"></i> Wipe Database</button>
+    <div style="display:flex; flex-direction:column; align-items:center;">
+        <button id="btn-cleanup" onclick="cleanupDatabase()" class="btn btn-primary" style="background:#8b5cf6; border-color:#6d28d9; padding: 0.4rem 0.8rem; font-size: 0.85rem; width:100%;"><i class="fa-solid fa-broom"></i> Cleanup DB</button>
+        <span id="lbl-cleanup-status" style="font-size: 0.7rem; font-weight: 600; color: var(--text-sec); margin-top:3px; text-transform:uppercase;">IDLE</span>
+    </div>
+    <div style="display:flex; flex-direction:column; align-items:center;">
+        <button id="btn-migrate" onclick="migrateDatabase()" class="btn btn-primary" style="background:#0ea5e9; border-color:#0284c7; padding: 0.4rem 0.8rem; font-size: 0.85rem; width:100%;"><i class="fa-solid fa-wrench"></i> Migrate Metadata</button>
+        <span id="lbl-migrate-status" style="font-size: 0.7rem; font-weight: 600; color: var(--text-sec); margin-top:3px; text-transform:uppercase;">IDLE</span>
+    </div>
+    <div style="display:flex; flex-direction:column; align-items:center;">
+        <button id="btn-wipe-rescan" onclick="wipeAndRescan()" class="btn btn-danger" style="background:#991b1b; border-color:#7f1d1d; padding: 0.4rem 0.8rem; font-size: 0.85rem; width:100%;"><i class="fa-solid fa-skull-crossbones"></i> Wipe Database</button>
+        <span style="font-size: 0.7rem; font-weight: 600; color: transparent; margin-top:3px;">_</span>
+    </div>
 </div>
 
 <div style="display:flex; gap:10px; margin-bottom:1.5rem; overflow-x:auto;">
@@ -365,11 +374,8 @@ async function cleanupDatabase() {
     const res = await fetch('/api/admin/global/cleanup', { method: 'POST' });
     const data = await res.json();
     
-    setTimeout(() => {
-        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-broom"></i> Cleanup DB'; }
-    }, 2000);
-    
     if (data.status === 'success') {
+        checkTasks();
         alert(data.message);
     } else {
         alert(`Error: ${data.message}`);
@@ -385,11 +391,8 @@ async function migrateDatabase() {
     const res = await fetch('/api/admin/global/migrate', { method: 'POST' });
     const data = await res.json();
     
-    setTimeout(() => {
-        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-wrench"></i> Migrate Metadata'; }
-    }, 2000);
-    
     if (data.status === 'success') {
+        checkTasks();
         alert(data.message);
     } else {
         alert(`Error: ${data.message}`);
@@ -451,6 +454,35 @@ async function loadUnindexedBadge() {
         if (badge) {
             badge.textContent = unCount;
             badge.style.display = unCount > 0 ? 'inline-flex' : 'none';
+        }
+    } catch(e) {}
+}
+
+async function checkTasks() {
+    try {
+        const res = await fetch('/api/admin/global/tasks/status');
+        const data = await res.json();
+        
+        const cleanBtn = document.getElementById('btn-cleanup');
+        const cleanLbl = document.getElementById('lbl-cleanup-status');
+        if (data.cleanup_running) {
+            if (cleanBtn) { cleanBtn.disabled = true; cleanBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Cleaning...'; }
+            if (cleanLbl) { cleanLbl.textContent = 'RUNNING'; cleanLbl.style.color = '#22c55e'; }
+            setTimeout(checkTasks, 5000);
+        } else {
+            if (cleanBtn) { cleanBtn.disabled = false; cleanBtn.innerHTML = '<i class="fa-solid fa-broom"></i> Cleanup DB'; }
+            if (cleanLbl) { cleanLbl.textContent = 'IDLE'; cleanLbl.style.color = 'var(--text-sec)'; }
+        }
+        
+        const migBtn = document.getElementById('btn-migrate');
+        const migLbl = document.getElementById('lbl-migrate-status');
+        if (data.migrate_running) {
+            if (migBtn) { migBtn.disabled = true; migBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Migrating...'; }
+            if (migLbl) { migLbl.textContent = 'RUNNING'; migLbl.style.color = '#22c55e'; }
+            if (!data.cleanup_running) setTimeout(checkTasks, 5000);
+        } else {
+            if (migBtn) { migBtn.disabled = false; migBtn.innerHTML = '<i class="fa-solid fa-wrench"></i> Migrate Metadata'; }
+            if (migLbl) { migLbl.textContent = 'IDLE'; migLbl.style.color = 'var(--text-sec)'; }
         }
     } catch(e) {}
 }
@@ -827,7 +859,7 @@ async function deleteUnindexed(id) {
     loadUnindexedBadge();
 }
 
-document.addEventListener("DOMContentLoaded", () => { switchView('dashboard'); checkIndexer(); });
+document.addEventListener("DOMContentLoaded", () => { switchView('dashboard'); checkIndexer(); checkTasks(); });
 </script>
 {% endif %}
 {% endblock %}
