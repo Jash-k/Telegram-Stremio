@@ -305,6 +305,10 @@ async def run_global_indexer(db, target_chat_id: int = None, force_historic: boo
                                     
                                 await _process_message(db, msg, chat_id)
                                 count += 1
+                                total_processed += 1
+                                if time.time() - last_log_time >= 120:
+                                    LOGGER.info(f"[GLOBAL INDEXER] Still running... Indexed {total_processed} items so far.")
+                                    last_log_time = time.time()
                                 fetched_count += 1
                                 
                                 # Periodically save our reverse checkpoint
@@ -337,6 +341,10 @@ async def run_global_indexer(db, target_chat_id: int = None, force_historic: boo
                                     
                                 await _process_message(db, msg, chat_id)
                                 count += 1
+                                total_processed += 1
+                                if time.time() - last_log_time >= 120:
+                                    LOGGER.info(f"[GLOBAL INDEXER] Still running... Indexed {total_processed} items so far.")
+                                    last_log_time = time.time()
                                 
                             if highest_seen > last_id:
                                 await db.global_db["state"].update_one(

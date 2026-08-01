@@ -128,6 +128,9 @@ from Backend.fastapi.routes.template_routes import (
 from Backend.fastapi.security.credentials import require_auth
 from Backend.pyrofork.bot import work_loads_summary
 
+_CLEANUP_RUNNING = False
+_MIGRATE_RUNNING = False
+
 templates = Jinja2Templates(directory="Backend/fastapi/templates")
 
 app = FastAPI(
@@ -1232,8 +1235,17 @@ async def migrate_global_db(_: bool = Depends(require_auth)):
     async def run_migrate():
         global _MIGRATE_RUNNING
         try:
+            total_meta = await db.global_db["meta"].count_documents({})
             cursor = db.global_db["meta"].find({})
+            import time
+            last_log = time.time()
+            processed = 0
+            from Backend.logger import LOGGER
             async for meta in cursor:
+                processed += 1
+                if time.time() - last_log >= 120:
+                    LOGGER.info(f"[GLOBAL MIGRATE] Still running... Processed {processed}/{total_meta} media groups.")
+                    last_log = time.time()
                 update_fields = {}
                 
                 if "rating" not in meta:
@@ -1302,8 +1314,14 @@ async def cleanup_global_db(_: bool = Depends(require_auth)):
         global _CLEANUP_RUNNING
         try:
             meta_ids = await db.global_db["files"].distinct("meta_id")
-            for mid in meta_ids:
+            import time
+            last_log = time.time()
+            from Backend.logger import LOGGER
+            for i, mid in enumerate(meta_ids):
                 await clean_meta_files(db, mid)
+                if time.time() - last_log >= 120:
+                    LOGGER.info(f"[GLOBAL CLEANUP] Still running... Processed {i+1}/{len(meta_ids)} media groups.")
+                    last_log = time.time()
         except Exception as e:
             print("Cleanup Error:", e)
         finally:
