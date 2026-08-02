@@ -138,6 +138,7 @@ async def _process_message(db, message, chat_id):
     }
     await db.global_db["files"].update_one({"_id": file_id}, {"$set": file_data}, upsert=True)
     await db.global_db["unindexed"].delete_one({"_id": file_id})
+    return doc_id
 
 
 async def clean_meta_files(db, meta_id: str):
@@ -313,7 +314,9 @@ async def run_global_indexer(db, target_chat_id: int = None, force_historic: boo
                                 if msg.id in processed_ids:
                                     continue
                                     
-                                await _process_message(db, msg, chat_id)
+                                mid = await _process_message(db, msg, chat_id)
+                                if mid:
+                                    updated_meta_ids.add(mid)
                                 count += 1
                                 total_processed += 1
                                 if time.time() - last_log_time >= 120:
@@ -348,7 +351,9 @@ async def run_global_indexer(db, target_chat_id: int = None, force_historic: boo
                                 if msg.id <= last_id: break
                                 if msg.id > highest_seen: highest_seen = msg.id
                                     
-                                await _process_message(db, msg, chat_id)
+                                mid = await _process_message(db, msg, chat_id)
+                                if mid:
+                                    updated_meta_ids.add(mid)
                                 count += 1
                                 total_processed += 1
                                 if time.time() - last_log_time >= 120:
