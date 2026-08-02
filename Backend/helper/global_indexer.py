@@ -264,6 +264,9 @@ async def run_global_indexer(db, target_chat_id: int = None, force_historic: boo
         
     _INDEXER_RUNNING = True
     LOGGER.info("[GLOBAL INDEXER] Started.")
+    import time
+    last_log_time = time.time()
+    total_processed = 0
     try:
         
         if target_chat_id:
@@ -289,19 +292,26 @@ async def run_global_indexer(db, target_chat_id: int = None, force_historic: boo
                         LOGGER.info(f"[INDEXER] {chat_id} ({msg_filter.name}) - Historic scan from offset {offset_id} (last seen {last_id})")
                         highest_seen = last_id
                         try:
-                            # Use search_messages for blazing fast fetching, but we skip messages we already processed 
-                            # via the historic_offset_id check.
                             fetched_count = 0
+                            
+                            # Grab existing message IDs from our DB so we don't reprocess them!
+                            # This completely prevents duplication and allows "resuming" without wiping!
+                            existing_files = await db.global_db["files"].find({"chat_id": chat_id}, {"message_id": 1}).to_list(None)
+                            existing_unidx = await db.global_db["unindexed"].find({"chat_id": chat_id}, {"message_id": 1}).to_list(None)
+                            processed_ids = {doc["message_id"] for doc in existing_files} | {doc["message_id"] for doc in existing_unidx}
+                            
                             async for msg in Userbot.search_messages(chat_id, filter=msg_filter):
                                 if not _INDEXER_RUNNING: break
                                 
-                                # In Pyrogram, search_messages goes newest to oldest.
-                                # If we are resuming a historic scan, we skip until we reach the offset we left off at.
                                 if offset_id > 0 and msg.id >= offset_id:
                                     continue
                                     
                                 if msg.id > highest_seen: 
                                     highest_seen = msg.id
+                                    
+                                # If we ALREADY indexed this file previously, skip it completely!
+                                if msg.id in processed_ids:
+                                    continue
                                     
                                 await _process_message(db, msg, chat_id)
                                 count += 1
@@ -311,7 +321,6 @@ async def run_global_indexer(db, target_chat_id: int = None, force_historic: boo
                                     last_log_time = time.time()
                                 fetched_count += 1
                                 
-                                # Periodically save our reverse checkpoint
                                 if fetched_count % 50 == 0:
                                     await db.global_db["state"].update_one(
                                         {"_id": sync_key}, 
