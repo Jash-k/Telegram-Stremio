@@ -1113,7 +1113,7 @@ async def map_batch_files(payload: dict, _: bool = Depends(require_auth)):
             imdb_str = m.group(1)
             try:
                 client = get_tmdb_client()
-                find_res = await client.find(imdb_str, external_source="imdb_id")
+                find_res = await client.find().by_imdb(imdb_str)
                 
                 # Try to find exactly what they asked for first
                 if media_type == "movie" and find_res.movie_results:
