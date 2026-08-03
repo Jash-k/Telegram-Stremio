@@ -9,7 +9,7 @@ from Backend.logger import LOGGER
 
 async def global_channel_filter(_, __, update):
     settings = SettingsManager.current()
-    if not settings.global_search_enabled:
+    if not settings.global_search:
         return False
     target_ids = _resolve_channel_ids(settings.global_search_channels)
     if update.chat and update.chat.id in target_ids:
