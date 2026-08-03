@@ -1114,9 +1114,17 @@ async def map_batch_files(payload: dict, _: bool = Depends(require_auth)):
             try:
                 client = get_tmdb_client()
                 find_res = await client.find(imdb_str, external_source="imdb_id")
+                
+                # Try to find exactly what they asked for first
                 if media_type == "movie" and find_res.movie_results:
                     tmdb_id = find_res.movie_results[0].id
                 elif media_type == "series" and find_res.tv_results:
+                    tmdb_id = find_res.tv_results[0].id
+                    
+                # Fallback: if they chose 'movie' but it's a TV show (or vice versa), just grab what TMDB has
+                elif find_res.movie_results:
+                    tmdb_id = find_res.movie_results[0].id
+                elif find_res.tv_results:
                     tmdb_id = find_res.tv_results[0].id
             except Exception:
                 pass

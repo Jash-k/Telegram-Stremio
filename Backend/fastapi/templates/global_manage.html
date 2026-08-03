@@ -593,7 +593,7 @@ async function loadChannelFiles() {
                     <td>${item.size_str || '0 MB'}</td>
                     <td>${info}</td>
                     <td style="white-space:nowrap;">
-                        <button class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="showMapModal('${item._id}', this.getAttribute('data-filename'))" data-filename="${escFilename}">Remap TMDB</button>
+                        <button class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="showMapModal('${item._id}', this.getAttribute('data-filename'), 'cf')" data-filename="${escFilename}">Remap TMDB</button>
                         <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteGlobalFile('${item._id}')"><i class="fa-solid fa-trash"></i></button>
                     </td>
                 </tr>`;
@@ -765,7 +765,7 @@ async function loadUnindexedPage() {
                     <td><span class="badge" style="background:#ef444420;color:#ef4444;">${item.reason}</span></td>
                     <td>${item.size_str || '0 MB'}</td>
                     <td style="white-space:nowrap;">
-                        <button class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="showMapModal('${item._id}', this.getAttribute('data-filename'))" data-filename="${escFilename}">Link TMDB</button>
+                        <button class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="showMapModal('${item._id}', this.getAttribute('data-filename'), 'unidx')" data-filename="${escFilename}">Link TMDB</button>
                         <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteUnindexed('${item._id}')"><i class="fa-solid fa-trash"></i></button>
                     </td>
                 </tr>`;
@@ -782,7 +782,28 @@ function changeUnidxPage(delta) {
 /* --- Shared Actions --- */
 
 let mappingFileId = null;
-function showMapModal(fileId, filename) {
+function showMapModal(fileId, filename, context) {
+    let checkboxes;
+    if (context === 'cf') {
+        checkboxes = document.querySelectorAll('.cf-cb:checked');
+    } else {
+        checkboxes = document.querySelectorAll('.unidx-cb:checked');
+    }
+
+    if (checkboxes.length > 1) {
+        // Automatically switch to batch map if multiple checkboxes are ticked
+        // AND one of them matches the fileId of the button clicked.
+        let isChecked = Array.from(checkboxes).some(cb => cb.value === fileId);
+        if (isChecked) {
+            isBatchMap = true;
+            mappingFileId = Array.from(checkboxes).map(cb => cb.value);
+            document.getElementById('map-filename').textContent = `Batch Mapping ${checkboxes.length} file(s) - episodes will be auto-extracted.`;
+            document.getElementById('map-modal').style.display = 'flex';
+            return;
+        }
+    }
+
+    // Default fallback to single map
     isBatchMap = false;
     mappingFileId = fileId;
     document.getElementById('map-filename').textContent = filename;
