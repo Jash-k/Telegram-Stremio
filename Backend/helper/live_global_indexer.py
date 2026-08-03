@@ -30,6 +30,10 @@ async def live_index_handler(client, message):
         if mid:
             LOGGER.info(f"[LIVE GLOBAL INDEXER] Automatically indexed new file from {chat_id}: {message.id}")
             
+            # Immediately run the cleanup rules for this specific TMDB ID
+            from Backend.helper.global_indexer import clean_meta_files
+            await clean_meta_files(db, mid)
+            
             # Update last_id to prevent duplicates on manual sync
             msg_filter_name = "VIDEO" if message.video else "DOCUMENT"
             sync_key = f"sync_{chat_id}_{msg_filter_name}"
