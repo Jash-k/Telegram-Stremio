@@ -809,6 +809,8 @@ async def start_global_index(request: Request, _: bool = Depends(require_auth)):
     try:
         payload = await request.json()
         target_chat_id = payload.get("chat_id")
+        if target_chat_id is not None:
+            target_chat_id = int(target_chat_id)
         force_historic = payload.get("force_historic", False)
     except:
         target_chat_id = None
@@ -979,10 +981,16 @@ async def get_global_channels(_: bool = Depends(require_auth)):
         return {"channels": []}
     
     idx_cursor = db.global_db["files"].aggregate([{"$group": {"_id": "$chat_id", "count": {"$sum": 1}}}])
-    idx_counts = {c["_id"]: c["count"] async for c in idx_cursor}
+    idx_counts = {}
+    async for c in idx_cursor:
+        try: idx_counts[int(c["_id"])] = c["count"]
+        except: pass
     
     unidx_cursor = db.global_db["unindexed"].aggregate([{"$group": {"_id": "$chat_id", "count": {"$sum": 1}}}])
-    unidx_counts = {c["_id"]: c["count"] async for c in unidx_cursor}
+    unidx_counts = {}
+    async for c in unidx_cursor:
+        try: unidx_counts[int(c["_id"])] = c["count"]
+        except: pass
     
     # Also get state to check if they have a last_id
     state_cursor = db.global_db["state"].find()
@@ -1032,7 +1040,7 @@ async def get_channel_files(chat_id: int, filter: str = "indexed", page: int = 1
     items = []
     total = 0
     
-    query = {"chat_id": chat_id}
+    query = {"chat_id": {"$in": [chat_id, str(chat_id)]}}
     if search:
         query["filename"] = {"$regex": search, "$options": "i"}
     

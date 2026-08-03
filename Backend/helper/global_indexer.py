@@ -269,6 +269,7 @@ async def run_global_indexer(db, target_chat_id: int = None, force_historic: boo
     last_log_time = time.time()
     total_processed = 0
     try:
+        updated_meta_ids = set()
         
         if target_chat_id:
             target_ids = [target_chat_id]
@@ -297,8 +298,8 @@ async def run_global_indexer(db, target_chat_id: int = None, force_historic: boo
                             
                             # Grab existing message IDs from our DB so we don't reprocess them!
                             # This completely prevents duplication and allows "resuming" without wiping!
-                            existing_files = await db.global_db["files"].find({"chat_id": chat_id}, {"message_id": 1}).to_list(None)
-                            existing_unidx = await db.global_db["unindexed"].find({"chat_id": chat_id}, {"message_id": 1}).to_list(None)
+                            existing_files = await db.global_db["files"].find({"chat_id": {"$in": [chat_id, str(chat_id)]}}, {"message_id": 1}).to_list(None)
+                            existing_unidx = await db.global_db["unindexed"].find({"chat_id": {"$in": [chat_id, str(chat_id)]}}, {"message_id": 1}).to_list(None)
                             processed_ids = {doc["message_id"] for doc in existing_files} | {doc["message_id"] for doc in existing_unidx}
                             
                             async for msg in Userbot.search_messages(chat_id, filter=msg_filter):
