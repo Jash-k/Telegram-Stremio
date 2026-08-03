@@ -49,6 +49,8 @@ async def start_services():
         await asyncio.sleep(1.2)
 
         if Userbot is not None:
+            from Backend.helper.live_global_indexer import setup_live_indexer
+            setup_live_indexer()
             await Userbot.start()
             Userbot.username = Userbot.me.username
             LOGGER.info(f"Userbot Client : [@{Userbot.username}]")

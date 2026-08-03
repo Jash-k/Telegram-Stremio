@@ -27,7 +27,7 @@ if Telegram.USER_SESSION_STRING:
         sleep_threshold=20,
         workers=6,
         max_concurrent_transmissions=10,
-        no_updates=True,
+        no_updates=False,
     )
 
 #----- Shared multi-client registries
