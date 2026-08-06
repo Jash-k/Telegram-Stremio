@@ -428,7 +428,7 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
         "types": ["movie", "series"],
         "resources": resources,
         "catalogs": catalogs,
-                "idPrefixes": ["tt", "tg", "tmdb", "tmdb:"],
+        "idPrefixes": ["tt", "tg", "tmdb", "tmdb:", "song:"],
         "behaviorHints": {
             "configurable": True,
             "configurationRequired": False
@@ -919,7 +919,7 @@ async def get_streams(
 
     is_combined = season_num == COMBINED_SEASON and episode_num is not None and episode_num >= COMBINED_EPISODE_BASE
 
-    if media_details and "telegram" in media_details:
+    if not unquote(id).startswith("song:") and media_details and "telegram" in media_details:
         for quality in media_details.get("telegram", []):
             if quality.get("id"):
                 filename = quality.get("name", "")
