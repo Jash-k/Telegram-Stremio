@@ -636,7 +636,7 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
         return {"meta": {}}
 
     meta_obj = {
-        "id": id,
+        "id": imdb_id,
         "type": "series" if media.get("media_type") == "tv" else "movie",
         "name": media.get("title", ""),
         "description": media.get("description", ""),
@@ -713,7 +713,9 @@ async def _global_streams_for(token: str, imdb_id: str, media_type: str, season_
             return []
         expected_title, year = _tmdb_title_year(details, media_type)
     else:
-        detail = await get_detail(imdb_id=imdb_id, media_type=imdb_media_type)
+        # Fallback to Cinemeta. Must strip song prefix here as well if they are using purely IMDb IDs.
+        cinemeta_imdb_id = imdb_id.replace("song:", "")
+        detail = await get_detail(imdb_id=cinemeta_imdb_id, media_type=imdb_media_type)
         if not detail or not detail.get("title"):
             return []
         expected_title = detail["title"]
@@ -723,7 +725,8 @@ async def _global_streams_for(token: str, imdb_id: str, media_type: str, season_
 
     if season_num is not None and episode_num is not None:
         try:
-            await get_season(imdb_id=imdb_id, season_id=season_num, episode_id=episode_num)
+            cinemeta_imdb_id = imdb_id.replace("song:", "")
+            await get_season(imdb_id=cinemeta_imdb_id, season_id=season_num, episode_id=episode_num)
         except Exception:
             pass
 
