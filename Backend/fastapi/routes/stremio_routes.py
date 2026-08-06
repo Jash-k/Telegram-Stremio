@@ -950,7 +950,8 @@ async def get_streams(
                     streams.append({"name": stream_name, "title": stream_title, "url": proxy_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
                 else:
                     streams.append({"name": stream_name, "title": stream_title, "url": original_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
-    elif is_global_search_enabled():
+    
+    if getattr(db, "global_db", None) is not None or is_global_search_enabled():
         try:
             streams.extend(
                 await _global_streams_for(token, imdb_id, media_type, season_num, episode_num)
