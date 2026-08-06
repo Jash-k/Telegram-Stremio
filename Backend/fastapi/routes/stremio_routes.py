@@ -897,11 +897,15 @@ async def get_streams(
     except (ValueError, IndexError):
         raise HTTPException(status_code=400, detail="Invalid Stremio ID format")
 
-    if not await _title_allowed(imdb_id, token_data):
+    search_imdb_id = imdb_id
+    if imdb_id.startswith("song:"):
+        search_imdb_id = imdb_id.replace("song:", "")
+
+    if not await _title_allowed(search_imdb_id, token_data):
         return {"streams": []}
 
     media_details = await db.get_media_details(
-        imdb_id=imdb_id,
+        imdb_id=search_imdb_id,
         season_number=season_num,
         episode_number=episode_num
     )
