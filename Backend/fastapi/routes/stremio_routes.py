@@ -705,8 +705,8 @@ async def _global_streams_for(token: str, imdb_id: str, media_type: str, season_
     imdb_media_type = "tvSeries" if media_type == "series" else "movie"
 
     # Handle TMDB IDs directly using our internal metadata cache instead of Cinemeta!
-    if imdb_id.startswith("tmdb:"):
-        tmdb_id_num = imdb_id.split(":")[1]
+    if imdb_id.startswith("tmdb:") or imdb_id.startswith("song:tmdb:"):
+        tmdb_id_num = imdb_id.split(":")[-1]
         from Backend.helper.metadata import _tmdb_details, _tmdb_title_year
         details = await _tmdb_details(media_type, tmdb_id_num)
         if not details:
