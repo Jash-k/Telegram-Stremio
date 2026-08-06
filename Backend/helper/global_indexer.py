@@ -25,8 +25,9 @@ async def get_or_create_global_catalogs(db):
         return
     catalogs = [
         {"_id": "tamil_movies", "type": "movie", "name": "Tamil Movies"},
-        {"_id": "dubbed_movies", "type": "movie", "name": "Dubbed Movies"},
         {"_id": "tamil_series", "type": "series", "name": "Tamil Series"},
+        {"_id": "video_songs", "type": "movie", "name": "Video Songs"},
+        {"_id": "dubbed_movies", "type": "movie", "name": "Dubbed Movies"},
         {"_id": "dubbed_series", "type": "series", "name": "Dubbed Series"},
         {"_id": "anime_movies", "type": "movie", "name": "Anime Movies"},
         {"_id": "anime_series", "type": "series", "name": "Anime Series"},

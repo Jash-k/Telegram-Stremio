@@ -255,6 +255,13 @@
                 <option value="series">TV Show</option>
             </select>
         </div>
+
+        <div style="margin-bottom:20px;">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 0.9rem; cursor: pointer;">
+                <input type="checkbox" id="map-is-video-song" style="accent-color: var(--primary); transform: scale(1.1);">
+                Map as Video Song (Creates a separate catalog for songs)
+            </label>
+        </div>
         
         <div style="display:flex; gap:10px; justify-content:flex-end;">
             <button class="btn btn-ghost" onclick="hideMapModal()">Cancel</button>
@@ -816,6 +823,7 @@ function hideMapModal() {
 async function submitMap() {
     const tmdb_id = document.getElementById('map-tmdb-id').value.trim();
     const media_type = document.getElementById('map-media-type').value;
+    const is_video_song = document.getElementById('map-is-video-song').checked;
     if (!tmdb_id) return alert("Enter a TMDB ID or Link");
     
     const btn = document.getElementById('btn-submit-map');
@@ -827,13 +835,13 @@ async function submitMap() {
         res = await fetch(`/api/admin/global/files/batch_map`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ file_ids: mappingFileId, tmdb_id: tmdb_id, media_type: media_type })
+            body: JSON.stringify({ file_ids: mappingFileId, tmdb_id: tmdb_id, media_type: media_type, is_video_song: is_video_song })
         });
     } else {
         res = await fetch(`/api/admin/global/files/batch_map`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ file_ids: [mappingFileId], tmdb_id: tmdb_id, media_type: media_type })
+            body: JSON.stringify({ file_ids: [mappingFileId], tmdb_id: tmdb_id, media_type: media_type, is_video_song: is_video_song })
         });
     }
     

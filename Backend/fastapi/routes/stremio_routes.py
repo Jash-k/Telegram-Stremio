@@ -582,8 +582,14 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
         raise HTTPException(status_code=404, detail="Catalog disabled")
 
     imdb_id = id
+    
+    # We must strip the prefix if it's a song so the local DB lookup doesn't completely fail
+    # However, local DB won't have song files anyway, but we just want to safely bypass it
+    search_imdb_id = imdb_id
+    if imdb_id.startswith("song:"):
+        search_imdb_id = imdb_id.replace("song:", "")
 
-    media = await db.get_media_details(imdb_id=imdb_id)
+    media = await db.get_media_details(imdb_id=search_imdb_id)
     
     # Check Global DB if not in Local DB
     if not media and getattr(db, "global_db", None) is not None:
@@ -873,7 +879,12 @@ async def get_streams(
         }
 
     try:
-        if id.startswith("tmdb:"):
+        if id.startswith("song:tmdb:"):
+            parts = id.split(":")
+            imdb_id = f"song:tmdb:{parts[2]}"
+            season_num = int(parts[3]) if len(parts) > 3 else None
+            episode_num = int(parts[4]) if len(parts) > 4 else None
+        elif id.startswith("tmdb:"):
             parts = id.split(":")
             imdb_id = f"tmdb:{parts[1]}"
             season_num = int(parts[2]) if len(parts) > 2 else None

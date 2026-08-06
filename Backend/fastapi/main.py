@@ -1097,6 +1097,7 @@ async def map_batch_files(payload: dict, _: bool = Depends(require_auth)):
     file_ids = payload.get("file_ids", [])
     input_id = str(payload.get("tmdb_id", "")).strip()
     media_type = payload.get("media_type")
+    is_video_song = payload.get("is_video_song", False)
     
     if not file_ids or not input_id or not media_type:
         return {"status": "error", "message": "Missing info"}
@@ -1152,6 +1153,9 @@ async def map_batch_files(payload: dict, _: bool = Depends(require_auth)):
     success_count = 0
     
     doc_id = f"tmdb:{tmdb_id}"
+    if is_video_song:
+        doc_id = f"song:tmdb:{tmdb_id}"
+
     year_val = getattr(details, "release_date", None) or getattr(details, "first_air_date", "")
     year_str = str(year_val) if year_val else ""
     
@@ -1172,10 +1176,15 @@ async def map_batch_files(payload: dict, _: bool = Depends(require_auth)):
             parsed = {}
         
         catalog = determine_catalog(parsed, details, media_type, filename)
+        if is_video_song:
+            catalog = "video_songs"
+
+        title_suffix = " (Video Songs)" if is_video_song else ""
+        
         update_data = {
             "tmdb_id": tmdb_id,
             "imdb_id": doc_id,
-            "title": getattr(details, "title", None) or getattr(details, "name", ""),
+            "title": (getattr(details, "title", None) or getattr(details, "name", "")) + title_suffix,
             "year": year_str,
             "poster": format_tmdb_image(details.poster_path),
             "background": format_tmdb_image(details.backdrop_path, "original"),
