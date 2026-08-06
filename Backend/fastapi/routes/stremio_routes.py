@@ -578,6 +578,7 @@ async def get_catalog(token: str, media_type: str, id: str, extra: Optional[str]
 #----- Detailed metadata for a title, including series episode list
 @router.get("/{token}/meta/{media_type}/{id}.json")
 async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depends(verify_token)):
+    id = unquote(id)
     if SettingsManager.current().hide_catalog:
         raise HTTPException(status_code=404, detail="Catalog disabled")
 
@@ -832,6 +833,7 @@ async def get_streams(
     id: str,
     token_data: dict = Depends(verify_token)
 ):
+    id = unquote(id)
 
     if token_data.get("subscription_expired"):
         return {
