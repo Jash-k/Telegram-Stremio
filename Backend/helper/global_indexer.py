@@ -143,6 +143,9 @@ async def _process_message(db, message, chat_id):
 
 
 async def clean_meta_files(db, meta_id: str):
+    if str(meta_id).startswith("song:"):
+        return
+
     cursor = db.global_db["files"].find({"meta_id": meta_id})
     files = [f async for f in cursor]
     if not files: return
