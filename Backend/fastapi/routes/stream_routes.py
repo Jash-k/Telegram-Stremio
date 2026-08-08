@@ -289,7 +289,7 @@ async def media_streamer(request: Request, chat_id: int, msg_id: int, token: str
     range_header = request.headers.get("Range", "")
     start, end = parse_range_header(range_header, file_size)
     req_length = end - start + 1
-    chunk_size = 3 * 1024 * 1024
+    chunk_size = 1024 * 1024
     offset = start - (start % chunk_size)
     first_part_cut = start - offset
     last_part_cut = (end % chunk_size) + 1
@@ -365,7 +365,7 @@ async def virtual_media_streamer(request: Request, parts_payload: list, token: s
     range_header = request.headers.get("Range", "")
     start, end = parse_range_header(range_header, file_size)
     req_length = end - start + 1
-    chunk_size = 3 * 1024 * 1024
+    chunk_size = 1024 * 1024
     stream_id = secrets.token_hex(8)
     decoded_name = unquote(request.path_params.get("name", ""))
     final_title = await _lookup_title(stream_id_hash, decoded_name)
@@ -428,7 +428,7 @@ async def global_media_streamer(request: Request, chat_id: int, msg_id: int, tok
     range_header = request.headers.get("Range", "")
     start, end = parse_range_header(range_header, file_size)
     req_length = end - start + 1
-    chunk_size = 3 * 1024 * 1024
+    chunk_size = 1024 * 1024
     offset = start - (start % chunk_size)
     first_part_cut = start - offset
     last_part_cut = (end % chunk_size) + 1
