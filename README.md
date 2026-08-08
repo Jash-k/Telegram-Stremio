@@ -123,7 +123,7 @@ The easiest way to add content: **forward the file to your AUTH channel** (the c
 
 > 👉 The better your filename/caption, the better the match. Below is exactly what's supported, with real examples.
 
-## 🎥 Movies
+
 
 A movie name should contain the **title**, **year**, and **quality**.
 
