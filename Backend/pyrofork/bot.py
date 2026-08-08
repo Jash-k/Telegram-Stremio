@@ -10,8 +10,8 @@ StreamBot = Client(
     bot_token=Telegram.BOT_TOKEN,
     plugins={"root": "Backend/pyrofork/plugins"},
     sleep_threshold=20,
-    workers=3,
-    max_concurrent_transmissions=7
+    workers=2,
+    max_concurrent_transmissions=3
 )
 
 USERBOT_CLIENT_INDEX = -1
@@ -25,8 +25,8 @@ if Telegram.USER_SESSION_STRING:
         api_hash=Telegram.API_HASH,
         session_string=Telegram.USER_SESSION_STRING,
         sleep_threshold=20,
-        workers=6,
-        max_concurrent_transmissions=10,
+        workers=2,
+        max_concurrent_transmissions=3,
         no_updates=False,
     )
 

@@ -9,7 +9,6 @@ from starlette.middleware.sessions import SessionMiddleware
 from Backend import __version__, db
 from Backend.fastapi import server
 from Backend.fastapi.main import app
-from Backend.helper import subscription_task_manager
 from Backend.helper.link_checker import DeadLinkChecker
 from Backend.helper.pinger import ping
 from Backend.helper.pyro import restart_notification, setup_bot_commands
@@ -69,11 +68,6 @@ async def start_services():
         await restart_notification()
         loop.create_task(server.serve())
         loop.create_task(ping())
-
-        link_checker_task = DeadLinkChecker(db, app, check_interval_hours=24)
-        loop.create_task(link_checker_task.start())
-
-        await subscription_task_manager.sync(StreamBot)
 
         LOGGER.info("Telegram-Stremio Started Successfully!")
         await idle()

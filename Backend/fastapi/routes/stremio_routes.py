@@ -835,54 +835,6 @@ async def get_streams(
 ):
     id = unquote(id)
 
-    if token_data.get("subscription_expired"):
-        return {
-            "streams": [
-                {
-                    "name": "🚫 Plan Expired",
-                    "title": "Your plan is expired.\nRenew it from the bot to continue watching.",
-                    "url": get_streambot_url()
-                }
-            ]
-        }
-
-    #----- Subscription users must currently be members of the configured group.
-    #----- Admin, lifetime and admin-set token-expiry grants skip this check.
-    if (SettingsManager.current().subscription
-            and not token_data.get("is_admin")
-            and not token_data.get("subscription_exempt")
-            and not token_data.get("expires_at")):
-        user_id = token_data.get("user_id")
-        if user_id and not await _is_subscription_member(int(user_id)):
-            return {
-                "streams": [
-                    {
-                        "name": "📢 Join Required",
-                        "title": "First join the channel to stream it.\nThen wait for 2 min for verification",
-                        "url": get_streambot_url()
-                    }
-                ]
-            }
-
-    if token_data.get("limit_exceeded"):
-        limit_type = token_data["limit_exceeded"]
-
-        title = (
-            "🚫 Daily Limit Reached – Upgrade Required"
-            if limit_type == "daily"
-            else "🚫 Monthly Limit Reached – Upgrade Required"
-        )
-
-        return {
-            "streams": [
-                {
-                    "name": "Limit Reached",
-                    "title": title,
-                    "url": f"tg://user?id={Telegram.OWNER_ID}"
-                }
-            ]
-        }
-
     try:
         if id.startswith("song:tmdb:"):
             parts = id.split(":")

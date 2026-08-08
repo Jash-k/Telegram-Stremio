@@ -16,7 +16,6 @@ from Backend import db
 from Backend.fastapi.security.tokens import verify_token
 from Backend.helper.custom_dl import ACTIVE_STREAMS, RECENT_STREAMS, ByteStreamer
 from Backend.helper.encrypt import decode_string
-from Backend.helper.utils import track_usage
 from Backend.helper.virtual_dl import resolve_virtual_parts, virtual_stream_generator
 from Backend.logger import LOGGER
 from Backend.pyrofork.bot import (
@@ -342,7 +341,6 @@ async def media_streamer(request: Request, chat_id: int, msg_id: int, token: str
         extra_clients=extra_clients_for_stream,
     )
 
-    asyncio.create_task(track_usage(stream_id, token, token_data))
 
     file_name, mime_type = _resolve_filename_mime(file_id)
     headers, status = _build_stream_headers(mime_type, file_name, req_length, range_header, start, end, file_size)
@@ -382,7 +380,6 @@ async def virtual_media_streamer(request: Request, parts_payload: list, token: s
     token_count = len(multi_clients) - 1
     parallelism, prefetch_count = get_parallel_prefetch(token_count)
 
-    asyncio.create_task(track_usage(stream_id, token, token_data))
 
     file_name, mime_type = _resolve_filename_mime(parts[0]["file_id"])
     common_headers, status = _build_stream_headers(mime_type, file_name, req_length, range_header, start, end, file_size)
@@ -444,7 +441,6 @@ async def global_media_streamer(request: Request, chat_id: int, msg_id: int, tok
         "global_search": True,
     }
 
-    asyncio.create_task(track_usage(stream_id, token, token_data))
 
     file_name, mime_type = _resolve_filename_mime(file_id)
     headers, status = _build_stream_headers(mime_type, file_name, req_length, range_header, start, end, file_size)

@@ -367,27 +367,6 @@ class SettingsManager:
         if any(old.get(k) != new.get(k) for k in proxy_keys):
             results["proxy"] = "updated — applies to next outbound request"
 
-        #----- Subscription enabled/disabled: start or stop the checker task
-        if old.get("subscription") != new.get("subscription"):
-            try:
-                from Backend.helper import subscription_task_manager
-                from Backend.pyrofork.bot import StreamBot
-
-                if new.get("subscription"):
-                    await subscription_task_manager.start(StreamBot)
-                    results["subscription"] = "checker task started"
-                else:
-                    await subscription_task_manager.stop()
-                    results["subscription"] = "checker task stopped"
-            except Exception as exc:
-                LOGGER.error(f"SettingsManager reinit subscription: {exc}")
-                results["subscription"] = f"error: {exc}"
-        else:
-            sub_keys = {"subscription_group_id", "approver_ids",
-                        "payment_instructions", "payment_qr_url"}
-            if any(old.get(k) != new.get(k) for k in sub_keys):
-                results["subscription"] = "settings reloaded in-memory"
-
         #----- Admin credentials changed
         cred_keys = {"admin_username", "admin_password"}
         if any(old.get(k) != new.get(k) for k in cred_keys):
