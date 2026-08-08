@@ -298,7 +298,7 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
                 counts_cursor = db.global_db["meta"].aggregate([{"$group": {"_id": "$catalog", "count": {"$sum": 1}}}])
                 counts = {c["_id"]: c["count"] async for c in counts_cursor}
                 
-                g_cats = await db.global_db["catalogs"].find().to_list(None)
+                g_cats = await db.global_db["catalogs"].find().sort("order", 1).to_list(None)
                 for gc in g_cats:
                     if counts.get(gc["_id"], 0) > 0:
                         catalogs.append({

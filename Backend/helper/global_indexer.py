@@ -24,15 +24,15 @@ async def get_or_create_global_catalogs(db):
     if db.global_db is None:
         return
     catalogs = [
-        {"_id": "tamil_movies", "type": "movie", "name": "Tamil Movies"},
-        {"_id": "tamil_series", "type": "series", "name": "Tamil Series"},
-        {"_id": "video_songs", "type": "movie", "name": "Video Songs"},
-        {"_id": "dubbed_movies", "type": "movie", "name": "Dubbed Movies"},
-        {"_id": "dubbed_series", "type": "series", "name": "Dubbed Series"},
-        {"_id": "anime_movies", "type": "movie", "name": "Anime Movies"},
-        {"_id": "anime_series", "type": "series", "name": "Anime Series"},
-        {"_id": "other_movies", "type": "movie", "name": "Other Movies"},
-        {"_id": "other_series", "type": "series", "name": "Other Series"},
+        {"_id": "tamil_movies", "type": "movie", "name": "Tamil Movies", "order": 1},
+        {"_id": "tamil_series", "type": "series", "name": "Tamil Series", "order": 2},
+        {"_id": "video_songs", "type": "movie", "name": "Video Songs", "order": 3},
+        {"_id": "dubbed_movies", "type": "movie", "name": "Dubbed Movies", "order": 4},
+        {"_id": "dubbed_series", "type": "series", "name": "Dubbed Series", "order": 5},
+        {"_id": "anime_movies", "type": "movie", "name": "Anime Movies", "order": 6},
+        {"_id": "anime_series", "type": "series", "name": "Anime Series", "order": 7},
+        {"_id": "other_movies", "type": "movie", "name": "Other Movies", "order": 8},
+        {"_id": "other_series", "type": "series", "name": "Other Series", "order": 9},
     ]
     for cat in catalogs:
         await db.global_db["catalogs"].update_one({"_id": cat["_id"]}, {"$set": cat}, upsert=True)
