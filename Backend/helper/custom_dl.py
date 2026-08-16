@@ -311,20 +311,15 @@ class ByteStreamer:
         async def consumer_generator():
             producer_task = asyncio.create_task(producer())
             current_part_idx = 1
-            _disconnect_check_counter = 0
 
             try:
                 while True:
-                    _disconnect_check_counter += 1
-                    if _disconnect_check_counter % 8 == 0:
-                        try:
-                            if request and await request.is_disconnected():
-                                stop_event.set()
-                                ACTIVE_STREAMS[stream_id]["status"] = "cancelled"
-                                break
-                        except Exception:
-                            pass
-
+                    # Do not call request.is_disconnected() here. Starlette's
+                    # StreamingResponse is already listening on the ASGI receive
+                    # channel and will cancel this generator on disconnect. A
+                    # second listener can consume the disconnect event, make the
+                    # generator finish normally, and trigger Uvicorn's
+                    # "Response content shorter than Content-Length" error.
                     try:
                         off_chunk = await asyncio.wait_for(q.get(), timeout=90.0)
                     except asyncio.TimeoutError:

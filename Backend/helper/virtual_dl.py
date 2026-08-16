@@ -1,10 +1,9 @@
-import math
 from typing import Dict, List, Optional, Tuple
 
 from fastapi import Request
 
 from Backend.helper.custom_dl import ByteStreamer
-from Backend.logger import LOGGER
+from Backend.helper.range_utils import chunk_window
 
 
 #----- Fetch metadata for each split part and compute cumulative offsets -> (parts, total_size)
@@ -62,10 +61,9 @@ async def virtual_stream_generator(
         local_start = max(pos, part_start) - part_start
         local_end = min(end, part_end) - part_start
 
-        offset = local_start - (local_start % chunk_size)
-        first_part_cut = local_start - offset
-        last_part_cut = (local_end % chunk_size) + 1
-        part_count = math.ceil(local_end / chunk_size) - math.floor(offset / chunk_size)
+        offset, first_part_cut, last_part_cut, part_count = chunk_window(
+            local_start, local_end, chunk_size
+        )
 
         body_gen = await streamer.prefetch_stream(
             file_id=part["file_id"],
@@ -87,15 +85,10 @@ async def virtual_stream_generator(
         async for chunk in body_gen:
             yield chunk
 
-        #----- Stop fetching further parts if the client has disconnected
-        if request is not None:
-            try:
-                if await request.is_disconnected():
-                    LOGGER.debug("Virtual stream %s: client gone, stopping at part %s", stream_id, part["index"])
-                    return
-            except Exception:
-                pass
-
+        # StreamingResponse owns the ASGI receive channel and cancels this
+        # generator when the client disconnects. Calling request.is_disconnected()
+        # here would race that listener, consume the disconnect event, and make
+        # StreamingResponse finish normally with fewer bytes than Content-Length.
         pos = part_end + 1
         if pos > end:
             break

@@ -16,6 +16,7 @@ from Backend import db
 from Backend.fastapi.security.tokens import verify_token
 from Backend.helper.custom_dl import ACTIVE_STREAMS, RECENT_STREAMS, ByteStreamer
 from Backend.helper.encrypt import decode_string
+from Backend.helper.range_utils import chunk_window
 from Backend.helper.virtual_dl import resolve_virtual_parts, virtual_stream_generator
 from Backend.logger import LOGGER
 from Backend.pyrofork.bot import (
@@ -289,10 +290,9 @@ async def media_streamer(request: Request, chat_id: int, msg_id: int, token: str
     start, end = parse_range_header(range_header, file_size)
     req_length = end - start + 1
     chunk_size = 1024 * 1024
-    offset = start - (start % chunk_size)
-    first_part_cut = start - offset
-    last_part_cut = (end % chunk_size) + 1
-    part_count = math.ceil(end / chunk_size) - math.floor(offset / chunk_size)
+    offset, first_part_cut, last_part_cut, part_count = chunk_window(
+        start, end, chunk_size
+    )
     stream_id = secrets.token_hex(8)
     decoded_name = unquote(request.path_params.get("name", ""))
     final_title = await _lookup_title(stream_id_hash, decoded_name)
@@ -426,10 +426,9 @@ async def global_media_streamer(request: Request, chat_id: int, msg_id: int, tok
     start, end = parse_range_header(range_header, file_size)
     req_length = end - start + 1
     chunk_size = 1024 * 1024
-    offset = start - (start % chunk_size)
-    first_part_cut = start - offset
-    last_part_cut = (end % chunk_size) + 1
-    part_count = math.ceil(end / chunk_size) - math.floor(offset / chunk_size)
+    offset, first_part_cut, last_part_cut, part_count = chunk_window(
+        start, end, chunk_size
+    )
     stream_id = secrets.token_hex(8)
 
     meta = {
