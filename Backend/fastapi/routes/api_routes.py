@@ -531,9 +531,7 @@ async def get_admin_stats_api() -> dict:
 
 #----- Clear the FileId cache across all active streamers
 async def clear_cache_api() -> dict:
-    total_cleared = sum(len(s._file_id_cache) for s in _streamer_by_client.values())
-    for streamer in _streamer_by_client.values():
-        streamer._file_id_cache.clear()
+    total_cleared = sum(streamer.clear_file_id_cache() for streamer in _streamer_by_client.values())
     LOGGER.info(f"Admin cleared the FileId cache ({total_cleared} items purged across {len(_streamer_by_client)} clients).")
 
     return {"status": "success", "message": f"{total_cleared} cached items cleared."}
@@ -1643,6 +1641,16 @@ async def update_settings_api(payload: dict) -> dict:
                     status_code=400,
                     detail=f"Invalid database URI (must start with mongodb:// or mongodb+srv://): {uri[:30]}…"
                 )
+
+    if "global_database_uri" in payload:
+        payload["global_database_uri"] = str(payload["global_database_uri"] or "").strip()
+        if payload["global_database_uri"] and not payload["global_database_uri"].startswith(
+            ("mongodb://", "mongodb+srv://")
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="GlobalDB URI must start with mongodb:// or mongodb+srv://",
+            )
 
     if "approver_ids" in payload:
         if not isinstance(payload["approver_ids"], list):

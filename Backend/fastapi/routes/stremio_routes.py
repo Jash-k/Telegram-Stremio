@@ -16,9 +16,19 @@ from Backend.config import Telegram
 from Backend.fastapi.security.tokens import verify_token
 from Backend.fastapi.themes import DEFAULT_THEME, get_theme
 from Backend.helper.fanart import fanart_artwork
+from Backend.helper.global_db_service import (
+    build_global_file_query,
+    first_int,
+    resolve_global_meta,
+)
 from Backend.helper.global_search import global_search, is_global_search_enabled
 from Backend.helper.imdb import get_detail, get_season
-from Backend.helper.metadata import resolve_cover_url, COMBINED_SEASON, COMBINED_EPISODE_BASE
+from Backend.helper.metadata import (
+    COMBINED_EPISODE_BASE,
+    COMBINED_SEASON,
+    _tmdb_details,
+    resolve_cover_url,
+)
 from Backend.helper.split_files import parse_combined_episodes, combined_name_key
 from Backend.helper.split_files import parse_combined_episodes
 from Backend.helper.settings_manager import SettingsManager
@@ -515,7 +525,7 @@ async def get_catalog(token: str, media_type: str, id: str, extra: Optional[str]
             metas = []
             for item in items:
                 metas.append({
-                    "id": item["_id"],
+                    "id": item.get("imdb_id") or item["_id"],
                     "type": item["media_type"],
                     "name": item["title"],
                     "poster": item.get("poster"),
@@ -592,42 +602,82 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
 
     media = await db.get_media_details(imdb_id=search_imdb_id)
     
-    # Check Global DB if not in Local DB
+    # Check GlobalDB if not in Local DB. Global metadata is canonically keyed
+    # by TMDb ID, so resolve incoming IMDb/TMDb aliases before querying files.
     if not media and getattr(db, "global_db", None) is not None:
-        g_meta = await db.global_db["meta"].find_one({"_id": imdb_id})
+        g_meta = await resolve_global_meta(db.global_db, imdb_id)
         if g_meta:
+            canonical_id = g_meta["_id"]
+            global_type = g_meta.get("media_type", media_type)
             meta_obj = {
                 "id": imdb_id,
-                "type": g_meta.get("media_type", media_type),
+                "type": global_type,
                 "name": g_meta.get("title", ""),
                 "description": g_meta.get("description", ""),
                 "year": str(g_meta.get("year", "")),
-                "poster": g_meta.get("poster"),
+                "releaseInfo": str(g_meta.get("year", "")),
+                "imdbRating": str(g_meta.get("rating") or ""),
+                "imdb_id": g_meta.get("imdb_id") or "",
+                "moviedb_id": g_meta.get("tmdb_id") or "",
+                "poster": _poster_url(
+                    g_meta.get("imdb_id") or "", g_meta.get("poster")
+                ),
                 "background": g_meta.get("background"),
-                "genres": g_meta.get("genres", [])
+                "genres": g_meta.get("genres", []),
             }
-            if meta_obj["type"] == "series":
-                files_cursor = db.global_db["files"].find({"meta_id": imdb_id})
-                videos = []
-                seen_eps = set()
-                async for fdoc in files_cursor:
-                    s_num = fdoc.get("season")
-                    e_start = fdoc.get("episode_start")
-                    e_end = fdoc.get("episode_end")
-                    if s_num is not None and e_start is not None:
-                        e_end = e_end or e_start
-                        for ep in range(e_start, e_end + 1):
-                            ep_key = f"{s_num}_{ep}"
-                            if ep_key not in seen_eps:
-                                seen_eps.add(ep_key)
-                                videos.append({
-                                    "id": f"{imdb_id}:{s_num}:{ep}",
-                                    "title": f"Episode {ep}",
-                                    "season": s_num,
-                                    "episode": ep
-                                })
-                videos.sort(key=lambda x: (x["season"], x["episode"]))
-                meta_obj["videos"] = videos
+            if global_type == "series":
+                files = await db.global_db["files"].find(
+                    {"meta_id": canonical_id},
+                    {"season": 1, "episode_start": 1, "episode_end": 1},
+                ).to_list(None)
+                episode_keys = set()
+                pack_seasons = set()
+                for file_doc in files:
+                    season = first_int(file_doc.get("season"))
+                    start_episode = first_int(file_doc.get("episode_start"))
+                    end_episode = first_int(file_doc.get("episode_end"))
+                    if season is None:
+                        continue
+                    if start_episode is None:
+                        pack_seasons.add(season)
+                        continue
+                    end_episode = start_episode if end_episode is None else end_episode
+                    if 0 <= end_episode - start_episode <= 500:
+                        episode_keys.update(
+                            (season, episode)
+                            for episode in range(start_episode, end_episode + 1)
+                        )
+
+                # A season pack has no encoded episode bounds. Use TMDb's season
+                # episode counts so Stremio can request each episode; the stream
+                # query deliberately offers the pack for every episode in that season.
+                if pack_seasons and g_meta.get("tmdb_id"):
+                    try:
+                        details = await _tmdb_details("tv", g_meta["tmdb_id"])
+                        for season_data in getattr(details, "seasons", None) or []:
+                            season_number = getattr(season_data, "season_number", None)
+                            episode_count = getattr(season_data, "episode_count", 0) or 0
+                            if season_number in pack_seasons:
+                                episode_keys.update(
+                                    (int(season_number), episode)
+                                    for episode in range(1, int(episode_count) + 1)
+                                )
+                    except Exception as exc:
+                        LOGGER.warning(
+                            "[GLOBAL DB] Could not expand season-pack metadata for %s: %s",
+                            canonical_id,
+                            exc,
+                        )
+
+                meta_obj["videos"] = [
+                    {
+                        "id": f"{imdb_id}:{season}:{episode}",
+                        "title": f"Episode {episode}",
+                        "season": season,
+                        "episode": episode,
+                    }
+                    for season, episode in sorted(episode_keys)
+                ]
             return {"meta": meta_obj}
 
     if not media:
@@ -704,19 +754,27 @@ async def get_subtitles(token: str, media_type: str, id: str, extra: Optional[st
 #----- Collect Global Search streams for a title/episode via IMDb lookup
 async def _global_streams_for(token: str, imdb_id: str, media_type: str, season_num: Optional[int], episode_num: Optional[int]) -> list:
     imdb_media_type = "tvSeries" if media_type == "series" else "movie"
+    global_meta = None
+    if getattr(db, "global_db", None) is not None:
+        global_meta = await resolve_global_meta(db.global_db, imdb_id)
 
-    # Handle TMDB IDs directly using our internal metadata cache instead of Cinemeta!
-    if imdb_id.startswith("tmdb:") or imdb_id.startswith("song:tmdb:"):
+    if global_meta:
+        expected_title = global_meta.get("title") or ""
+        year = global_meta.get("year")
+    elif imdb_id.startswith("tmdb:") or imdb_id.startswith("song:tmdb:"):
         tmdb_id_num = imdb_id.split(":")[-1]
-        from Backend.helper.metadata import _tmdb_details, _tmdb_title_year
+        from Backend.helper.metadata import _tmdb_title_year
         details = await _tmdb_details(media_type, tmdb_id_num)
         if not details:
             return []
         expected_title, year = _tmdb_title_year(details, media_type)
     else:
-        # Fallback to Cinemeta. Must strip song prefix here as well if they are using purely IMDb IDs.
-        cinemeta_imdb_id = imdb_id.replace("song:", "")
-        detail = await get_detail(imdb_id=cinemeta_imdb_id, media_type=imdb_media_type)
+        # Global Search remains the live fallback when the durable index has no
+        # matching metadata or files.
+        cinemeta_imdb_id = imdb_id.removeprefix("song:")
+        detail = await get_detail(
+            imdb_id=cinemeta_imdb_id, media_type=imdb_media_type
+        )
         if not detail or not detail.get("title"):
             return []
         expected_title = detail["title"]
@@ -734,13 +792,10 @@ async def _global_streams_for(token: str, imdb_id: str, media_type: str, season_
     try:
         # Check Global DB first!
         global_results = []
-        if getattr(db, "global_db", None) is not None:
-            query = {"meta_id": imdb_id}
-            if season_num is not None:
-                query["season"] = season_num
-                if episode_num is not None:
-                    query["episode_start"] = {"$lte": episode_num}
-                    query["episode_end"] = {"$gte": episode_num}
+        if getattr(db, "global_db", None) is not None and global_meta:
+            query = build_global_file_query(
+                global_meta["_id"], season_num, episode_num
+            )
             cursor = db.global_db["files"].find(query)
             
             async for fdoc in cursor:

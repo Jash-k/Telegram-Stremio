@@ -1,6 +1,12 @@
 from pyrogram import Client
+from pyrogram.session import Session
 
 from Backend.config import Telegram
+from Backend.helper.pyrogram_guard import install_session_restart_guard
+
+# Pyrofork 2.3.x can schedule overlapping restarts for one failed transport.
+# Guard the class before any bot or userbot Session instances are started.
+install_session_restart_guard(Session)
 
 #----- Primary bot client (loads plugins)
 StreamBot = Client(

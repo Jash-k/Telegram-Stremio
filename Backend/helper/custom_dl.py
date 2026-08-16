@@ -17,7 +17,13 @@ from Backend import db
 from Backend.helper.exceptions import FileNotFound
 from Backend.helper.pyro import get_file_ids
 from Backend.logger import LOGGER
-from Backend.pyrofork.bot import client_avg_mbps, client_dc_map, client_failures, multi_clients, work_loads
+from Backend.pyrofork.bot import (
+    client_avg_mbps,
+    client_dc_map,
+    client_failures,
+    multi_clients,
+    work_loads,
+)
 
 ACTIVE_STREAMS: Dict[str, Dict] = {}
 RECENT_STREAMS = deque(maxlen=20)
@@ -27,61 +33,83 @@ RECENT_STREAMS = deque(maxlen=20)
 class ByteStreamer:
     CHUNK_SIZE = 1024 * 1024
     CLEAN_INTERVAL = 30 * 60
+    MISSING_FILE_TTL = 30.0
     _instances: Dict[int, "ByteStreamer"] = {}
 
     def __init__(self, client: Client, client_index: int = -1):
         self.client = client
         self.client_index = client_index
-        self._file_id_cache: Dict[int, FileId] = {}
+        self._file_id_cache: Dict[Tuple[int, int], FileId] = {}
+        self._file_id_inflight: Dict[Tuple[int, int], asyncio.Task] = {}
+        self._missing_file_ids: Dict[Tuple[int, int], float] = {}
         self._session_lock = asyncio.Lock()
         if client_index >= 0:
             ByteStreamer._instances[client_index] = self
         asyncio.create_task(self._clean_cache())
-        asyncio.create_task(self._prewarm_sessions())
 
-    async def _prewarm_sessions(self):
-        common_dcs = [1, 2, 4, 5]
-        test_mode = await self.client.storage.test_mode()
-        current_dc = await self.client.storage.dc_id()
-        for dc in common_dcs:
-            if dc in self.client.media_sessions or dc == current_dc:
-                continue
-            try:
-                auth_key = await Auth(self.client, dc, test_mode).create()
-                session = Session(self.client, dc, auth_key, test_mode, is_media=True)
-                session.no_updates = True
-                session.timeout = 30
-                session.sleep_threshold = 60
-                await session.start()
-                imported = False
-                for _ in range(6):
-                    try:
-                        exported = await self.client.invoke(raw.functions.auth.ExportAuthorization(dc_id=dc))
-                        await session.send(raw.functions.auth.ImportAuthorization(id=exported.id,bytes=exported.bytes,))
-                        imported = True
-                        break
-                    except AuthBytesInvalid:
-                        await asyncio.sleep(0.5)
-                    except OSError:
-                        await asyncio.sleep(1)
-                    except Exception:
-                        break
-                if imported:
-                    self.client.media_sessions[dc] = session
-                else:
-                    await session.stop()
-            except Exception:
-                continue
+    @staticmethod
+    def _file_cache_key(chat_id: int, message_id: int) -> Tuple[int, int]:
+        # Telegram message IDs are unique only inside a chat.
+        return int(chat_id), int(message_id)
 
-    #----- Fetch (and cache) Telegram FileId properties for a message
+    def invalidate_file_properties(self, chat_id: int, message_id: int) -> None:
+        key = self._file_cache_key(chat_id, message_id)
+        self._file_id_cache.pop(key, None)
+        self._missing_file_ids.pop(key, None)
+
+    def clear_file_id_cache(self) -> int:
+        count = len(self._file_id_cache) + len(self._missing_file_ids)
+        self._file_id_cache.clear()
+        self._missing_file_ids.clear()
+        return count
+
+    #----- Fetch and cache Telegram FileId properties, sharing concurrent lookups
     async def get_file_properties(self, chat_id: int, message_id: int) -> FileId:
-        if message_id not in self._file_id_cache:
-            file_id = await get_file_ids(self.client, int(chat_id), int(message_id))
-            if not file_id:
-                LOGGER.warning("Message %s not found", message_id)
-                raise FileNotFound
-            self._file_id_cache[message_id] = file_id
-        return self._file_id_cache[message_id]
+        key = self._file_cache_key(chat_id, message_id)
+        cached = self._file_id_cache.get(key)
+        if cached is not None:
+            return cached
+
+        now = time.monotonic()
+        missing_until = self._missing_file_ids.get(key, 0.0)
+        if missing_until > now:
+            raise FileNotFound("Message not found or empty")
+        if missing_until:
+            self._missing_file_ids.pop(key, None)
+
+        lookup_task = self._file_id_inflight.get(key)
+        if lookup_task is None:
+            async def load_file_id() -> FileId:
+                file_id = await get_file_ids(self.client, key[0], key[1])
+                if not file_id:
+                    raise FileNotFound("Message not found or empty")
+                return file_id
+
+            lookup_task = asyncio.create_task(load_file_id())
+            self._file_id_inflight[key] = lookup_task
+
+            def finish_lookup(done_task: asyncio.Task) -> None:
+                if self._file_id_inflight.get(key) is done_task:
+                    self._file_id_inflight.pop(key, None)
+                if done_task.cancelled():
+                    return
+                try:
+                    file_id = done_task.result()
+                except FileNotFound:
+                    self._missing_file_ids[key] = time.monotonic() + self.MISSING_FILE_TTL
+                    LOGGER.warning("Message %s in chat %s was not found", key[1], key[0])
+                except Exception:
+                    # Transient connection/RPC failures must remain retryable.
+                    return
+                else:
+                    self._file_id_cache[key] = file_id
+                    self._missing_file_ids.pop(key, None)
+
+            lookup_task.add_done_callback(finish_lookup)
+
+        # A disconnected HTTP probe must not cancel a lookup shared by another
+        # simultaneous HEAD/range request from the player.
+        return await asyncio.shield(lookup_task)
 
     #----- Build a prefetching, range-aware streaming generator for a file
     async def prefetch_stream(
@@ -139,12 +167,10 @@ class ByteStreamer:
                 if not chat_id or not message_id:
                     return False
                 try:
-                    streamer_ref._file_id_cache.pop(message_id, None)
-                    fresh = await get_file_ids(streamer_ref.client, chat_id, message_id)
-                    if fresh:
-                        streamer_ref._file_id_cache[message_id] = fresh
-                        loc_b[0] = await ByteStreamer._get_location(fresh)
-                        return True
+                    streamer_ref.invalidate_file_properties(chat_id, message_id)
+                    fresh = await streamer_ref.get_file_properties(chat_id, message_id)
+                    loc_b[0] = await ByteStreamer._get_location(fresh)
+                    return True
                 except Exception as exc:
                     LOGGER.warning("Location refresh failed for msg_id=%s: %s", message_id, exc)
                 return False
@@ -501,7 +527,7 @@ class ByteStreamer:
     async def _clean_cache(self) -> None:
         while True:
             await asyncio.sleep(self.CLEAN_INTERVAL)
-            self._file_id_cache.clear()
+            self.clear_file_id_cache()
             LOGGER.debug("ByteStreamer: cleared file_id cache")
 
 

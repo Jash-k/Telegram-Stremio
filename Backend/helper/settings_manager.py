@@ -327,8 +327,27 @@ class SettingsManager:
             result = await db.reload_extra_databases(new_extra)
             results["databases"] = result.get("message", "databases reloaded")
 
+        old_global_uri = str(old.get("global_database_uri") or "").strip()
+        new_global_uri = str(merged.get("global_database_uri") or "").strip()
+        global_db_changed = old_global_uri != new_global_uri
+        if global_db_changed:
+            if getattr(db, "global_db", None) is not None:
+                from Backend.helper import global_indexer
+
+                if (await global_indexer.global_indexer_status(db)).get("running"):
+                    raise ValueError(
+                        "Stop the GlobalDB indexer before changing its database URI."
+                    )
+            result = await db.configure_global_database(new_global_uri)
+            if not result.get("ok"):
+                raise ValueError(result.get("message") or "GlobalDB connection failed")
+            results["global_database"] = result.get("message", "GlobalDB reconfigured")
+
         #----- Phase 2: persist and flip the in-memory snapshot
-        await db.save_settings(merged)
+        if not await db.save_settings(merged):
+            if global_db_changed:
+                await db.configure_global_database(old_global_uri)
+            raise RuntimeError("Could not persist settings")
         cls._current = Settings(merged)
 
         #----- Phase 3: reinit everything that reads current()

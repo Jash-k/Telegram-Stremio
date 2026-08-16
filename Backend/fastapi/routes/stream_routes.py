@@ -8,14 +8,16 @@ from typing import Dict
 from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.responses import Response as PlainResponse
-from fastapi.responses import StreamingResponse
+from pyrogram.errors import RPCError
 
 from Backend import db
 from Backend.fastapi.security.tokens import verify_token
 from Backend.helper.custom_dl import ACTIVE_STREAMS, RECENT_STREAMS, ByteStreamer
 from Backend.helper.encrypt import decode_string
+from Backend.helper.exceptions import FileNotFound
+from Backend.helper.global_db_service import remove_global_file_reference
 from Backend.helper.range_utils import chunk_window
 from Backend.helper.virtual_dl import resolve_virtual_parts, virtual_stream_generator
 from Backend.logger import LOGGER
@@ -408,6 +410,22 @@ def _get_userbot_streamer() -> ByteStreamer:
     return _userbot_streamer
 
 
+async def _remove_stale_global_reference(chat_id: int, msg_id: int) -> None:
+    if getattr(db, "global_db", None) is None:
+        return
+    try:
+        await remove_global_file_reference(db.global_db, chat_id, msg_id)
+    except Exception as exc:
+        # Playback must still return the correct Telegram error even if cleanup
+        # is temporarily unavailable.
+        LOGGER.error(
+            "[GLOBAL DB] Failed stale-reference cleanup for chat=%s msg=%s: %s",
+            chat_id,
+            msg_id,
+            exc,
+        )
+
+
 #----- Stream a Global Search file through the Userbot session directly
 async def global_media_streamer(request: Request, chat_id: int, msg_id: int, token: str, token_data: dict = None, stream_id_hash: str = None):
     streamer = _get_userbot_streamer()
@@ -417,9 +435,19 @@ async def global_media_streamer(request: Request, chat_id: int, msg_id: int, tok
     LOGGER.info(f"[USERBOT] Stream request: chat={chat_id} msg={msg_id}")
     try:
         file_id = await streamer.get_file_properties(chat_id=chat_id, message_id=msg_id)
-    except Exception as e:
-        LOGGER.error(f"[USERBOT] File not accessible: chat={chat_id} msg={msg_id}: {e}")
+    except FileNotFound:
+        LOGGER.warning(f"[USERBOT] File not found: chat={chat_id} msg={msg_id}")
+        await _remove_stale_global_reference(chat_id, msg_id)
         raise HTTPException(status_code=404, detail="File not accessible via Global Search")
+    except RPCError as e:
+        LOGGER.warning(f"[USERBOT] Telegram rejected file lookup: chat={chat_id} msg={msg_id}: {type(e).__name__}")
+        raise HTTPException(status_code=404, detail="File not accessible via Global Search")
+    except (OSError, TimeoutError, ConnectionError) as e:
+        LOGGER.error(f"[USERBOT] Telegram connection unavailable during file lookup: {type(e).__name__}")
+        raise HTTPException(status_code=503, detail="Telegram connection is temporarily unavailable")
+    except Exception as e:
+        LOGGER.error(f"[USERBOT] Unexpected file lookup failure: {type(e).__name__}")
+        raise HTTPException(status_code=502, detail="Telegram file lookup failed")
 
     file_size = file_id.file_size
     range_header = request.headers.get("Range", "")

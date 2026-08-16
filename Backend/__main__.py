@@ -31,6 +31,11 @@ async def start_services():
         await asyncio.sleep(1.2)
 
         await SettingsManager.initialize(db)
+        global_db_result = await db.configure_global_database(
+            SettingsManager.current().global_database_uri
+        )
+        if not global_db_result["ok"]:
+            LOGGER.error("GlobalDB startup configuration failed: %s", global_db_result["message"])
         app.add_middleware(SessionMiddleware, secret_key=SettingsManager.current().session_secret or secrets.token_hex(32))
         await asyncio.sleep(0.5)
 

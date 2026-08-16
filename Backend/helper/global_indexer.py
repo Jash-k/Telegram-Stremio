@@ -1,14 +1,14 @@
 import asyncio
 import re
 import time
-from typing import Dict, List, Optional
+import uuid
+from datetime import datetime, timedelta, timezone
 
 import PTN
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 from pyrogram import enums
-from pyrogram.errors import (
-    FloodWait, ChatAdminRequired, ChannelPrivate, PeerIdInvalid,
-    UserNotParticipant, AuthKeyUnregistered, SessionRevoked, RPCError,
-)
+from pyrogram.errors import FloodWait
 
 from Backend.logger import LOGGER
 from Backend.helper.settings_manager import SettingsManager
@@ -16,9 +16,209 @@ from Backend.helper.pyro import get_readable_file_size
 from Backend.pyrofork.bot import Userbot
 from Backend.helper.split_files import parse_combined_episodes
 from Backend.helper.metadata import _tmdb_details, safe_tmdb_search, format_tmdb_image
+from Backend.helper.global_db_service import (
+    episode_bounds,
+    first_int,
+    global_file_key,
+    remove_global_file_reference,
+    remove_global_file_references,
+)
 from Backend.helper.global_search import _video_filename
 
 _INDEXER_RUNNING = False
+_INDEXER_STOP_REQUESTED = False
+_INDEXER_TASK = None
+_INDEXER_OWNER = uuid.uuid4().hex
+_INDEXER_HEARTBEAT_AT = 0.0
+_INDEXER_LEASE_SECONDS = 120
+_INDEXER_STATUS = {
+    "running": False,
+    "stop_requested": False,
+    "processed": 0,
+    "current_chat": None,
+    "current_filter": None,
+    "last_error": None,
+}
+
+
+def _lease_expiry(now: datetime) -> datetime:
+    return now + timedelta(seconds=_INDEXER_LEASE_SECONDS)
+
+
+async def _acquire_indexer_lease(db, target_chat_id, force_historic: bool) -> bool:
+    if db.global_db is None:
+        return False
+    now = datetime.now(timezone.utc)
+    try:
+        job = await db.global_db["state"].find_one_and_update(
+            {
+                "_id": "global_indexer_job",
+                "$or": [
+                    {"running": {"$ne": True}},
+                    {"lease_until": {"$lte": now}},
+                    {"lease_until": {"$exists": False}},
+                    {"owner": _INDEXER_OWNER},
+                ],
+            },
+            {"$set": {
+                "running": True,
+                "status": "running",
+                "owner": _INDEXER_OWNER,
+                "lease_until": _lease_expiry(now),
+                "heartbeat_at": now,
+                "started_at": now,
+                "finished_at": None,
+                "stop_requested": False,
+                "processed": 0,
+                "current_chat": None,
+                "current_filter": None,
+                "last_error": None,
+                "target_chat_id": target_chat_id,
+                "force_historic": bool(force_historic),
+            }},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        return False
+    return bool(job and job.get("owner") == _INDEXER_OWNER)
+
+
+async def _heartbeat_and_should_stop(db, force: bool = False) -> bool:
+    """Renew this process' durable lease and observe cross-replica stop requests."""
+    global _INDEXER_HEARTBEAT_AT, _INDEXER_STOP_REQUESTED
+    if _INDEXER_STOP_REQUESTED:
+        return True
+    now_mono = time.monotonic()
+    if not force and now_mono - _INDEXER_HEARTBEAT_AT < 15:
+        return False
+
+    now = datetime.now(timezone.utc)
+    job = await db.global_db["state"].find_one_and_update(
+        {"_id": "global_indexer_job", "running": True, "owner": _INDEXER_OWNER},
+        {"$set": {
+            "lease_until": _lease_expiry(now),
+            "heartbeat_at": now,
+            "processed": _INDEXER_STATUS["processed"],
+            "current_chat": _INDEXER_STATUS["current_chat"],
+            "current_filter": _INDEXER_STATUS["current_filter"],
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+    _INDEXER_HEARTBEAT_AT = now_mono
+    if not job:
+        _INDEXER_STATUS["last_error"] = "Indexer lease lost to another process."
+        _INDEXER_STOP_REQUESTED = True
+        return True
+    if job.get("stop_requested"):
+        _INDEXER_STOP_REQUESTED = True
+        _INDEXER_STATUS["stop_requested"] = True
+        return True
+    return False
+
+
+async def _lease_aware_sleep(db, seconds: int) -> None:
+    remaining = max(0, int(seconds or 0))
+    while remaining and not _INDEXER_STOP_REQUESTED:
+        chunk = min(10, remaining)
+        await asyncio.sleep(chunk)
+        remaining -= chunk
+        if await _heartbeat_and_should_stop(db, force=True):
+            break
+
+
+async def schedule_global_indexer(
+    db, target_chat_id: int = None, force_historic: bool = False
+) -> bool:
+    """Claim a cross-replica lease, then schedule one process-local task."""
+    global _INDEXER_RUNNING, _INDEXER_STOP_REQUESTED, _INDEXER_TASK
+    global _INDEXER_HEARTBEAT_AT
+    if _INDEXER_RUNNING or (_INDEXER_TASK is not None and not _INDEXER_TASK.done()):
+        return False
+    if not await _acquire_indexer_lease(db, target_chat_id, force_historic):
+        return False
+
+    _INDEXER_RUNNING = True
+    _INDEXER_STOP_REQUESTED = False
+    _INDEXER_HEARTBEAT_AT = 0.0
+    _INDEXER_STATUS.update(
+        {
+            "running": True,
+            "stop_requested": False,
+            "processed": 0,
+            "current_chat": None,
+            "current_filter": None,
+            "last_error": None,
+        }
+    )
+    _INDEXER_TASK = asyncio.create_task(
+        run_global_indexer(
+            db,
+            target_chat_id,
+            force_historic,
+            _already_claimed=True,
+            _lease_claimed=True,
+        )
+    )
+    return True
+
+
+async def request_global_indexer_stop(db) -> bool:
+    global _INDEXER_STOP_REQUESTED
+    local_running = _INDEXER_RUNNING
+    if local_running:
+        _INDEXER_STOP_REQUESTED = True
+        _INDEXER_STATUS["stop_requested"] = True
+    if db.global_db is None:
+        return local_running
+    result = await db.global_db["state"].update_one(
+        {"_id": "global_indexer_job", "running": True},
+        {"$set": {"stop_requested": True, "stop_requested_at": datetime.now(timezone.utc)}},
+    )
+    return local_running or bool(result.matched_count)
+
+
+async def global_indexer_status(db) -> dict:
+    status = dict(_INDEXER_STATUS)
+    if db.global_db is None:
+        return status
+    job = await db.global_db["state"].find_one(
+        {"_id": "global_indexer_job"}, {"_id": 0, "owner": 0}
+    )
+    if job and job.get("running") and job.get("lease_until"):
+        lease_until = job["lease_until"]
+        if lease_until.tzinfo is None:
+            lease_until = lease_until.replace(tzinfo=timezone.utc)
+        if lease_until <= datetime.now(timezone.utc):
+            expired = await db.global_db["state"].update_one(
+                {
+                    "_id": "global_indexer_job",
+                    "running": True,
+                    "lease_until": job["lease_until"],
+                },
+                {"$set": {
+                    "running": False,
+                    "status": "expired",
+                    "last_error": "Indexer lease expired before clean shutdown.",
+                    "finished_at": datetime.now(timezone.utc),
+                }},
+            )
+            if expired.modified_count:
+                job.update(
+                    {
+                        "running": False,
+                        "status": "expired",
+                        "last_error": "Indexer lease expired before clean shutdown.",
+                    }
+                )
+            else:
+                job = await db.global_db["state"].find_one(
+                    {"_id": "global_indexer_job"}, {"_id": 0, "owner": 0}
+                )
+    if job:
+        status.update(job)
+    return status
+
 
 async def get_or_create_global_catalogs(db):
     if db.global_db is None:
@@ -49,9 +249,20 @@ def determine_catalog(parsed: dict, details, media_type: str, filename: str) -> 
     return "other_movies" if media_type == "movie" else "other_series"
 
 async def log_unindexed(db, file_id, filename, size, chat_id, message_id, reason, title=None, year=None):
+    # An edited caption may turn a previously indexed file into an invalid one.
+    # Remove the old mapping first so catalogs cannot keep serving stale metadata.
+    await remove_global_file_reference(db.global_db, chat_id, message_id)
     doc = {
-        "_id": file_id, "filename": filename, "size": size, "size_str": get_readable_file_size(size),
-        "chat_id": chat_id, "message_id": message_id, "reason": reason, "parsed_title": title or "", "parsed_year": year or ""
+        "_id": file_id,
+        "filename": filename,
+        "size": size,
+        "size_str": get_readable_file_size(size),
+        "chat_id": int(chat_id),
+        "message_id": int(message_id),
+        "reason": reason,
+        "parsed_title": title or "",
+        "parsed_year": year or "",
+        "updated_at": time.time(),
     }
     await db.global_db["unindexed"].update_one({"_id": file_id}, {"$set": doc}, upsert=True)
 
@@ -61,7 +272,7 @@ async def _process_message(db, message, chat_id):
     
     media = getattr(message, "video", None) or getattr(message, "document", None)
     size = getattr(media, "file_size", 0) or 0
-    file_id = f"{chat_id}_{message.id}"
+    file_id = global_file_key(chat_id, message.id)
     
     try:
         parsed = PTN.parse(filename)
@@ -76,8 +287,15 @@ async def _process_message(db, message, chat_id):
         await log_unindexed(db, file_id, filename, size, chat_id, message.id, "No Title Found", title, year)
         return
         
-    media_type = "series" if parsed.get("season") or parse_combined_episodes(filename) else "movie"
-    tmdb_type = "tv" if media_type == "series" else "movie" 
+    combined = parse_combined_episodes(filename)
+    parsed_season = first_int(parsed.get("season"))
+    parsed_episode_start, parsed_episode_end = episode_bounds(parsed.get("episode"))
+    media_type = (
+        "series"
+        if parsed_season is not None or parsed_episode_start is not None or combined
+        else "movie"
+    )
+    tmdb_type = "tv" if media_type == "series" else "movie"
     
     tmdb_res = await safe_tmdb_search(title, tmdb_type, year)
     if not tmdb_res and year is not None:
@@ -95,18 +313,34 @@ async def _process_message(db, message, chat_id):
         
     catalog = determine_catalog(parsed, details, media_type, filename)
     doc_id = f"tmdb:{tmdb_id}"
+    external_ids = getattr(details, "external_ids", None)
+    if isinstance(external_ids, dict):
+        actual_imdb_id = external_ids.get("imdb_id")
+    else:
+        actual_imdb_id = getattr(external_ids, "imdb_id", None) if external_ids else None
     year_val = getattr(details, "release_date", None) or getattr(details, "first_air_date", "")
-    year_str = str(year_val) if year_val else ""
+    year_number = getattr(year_val, "year", None)
+    if year_number is None:
+        year_match = re.search(r"\b(19\d{2}|20\d{2})\b", str(year_val or ""))
+        year_number = int(year_match.group(1)) if year_match else None
+    aliases = [doc_id]
+    if actual_imdb_id:
+        aliases.append(actual_imdb_id)
 
     update_data = {
-        "tmdb_id": tmdb_id, "imdb_id": doc_id,
+        "tmdb_id": tmdb_id,
+        "imdb_id": actual_imdb_id,
+        "aliases": aliases,
         "title": getattr(details, "title", None) or getattr(details, "name", ""),
-        "year": year_str, "poster": format_tmdb_image(details.poster_path),
+        "year": year_number,
+        "poster": format_tmdb_image(details.poster_path),
         "background": format_tmdb_image(details.backdrop_path, "original"),
-        "description": details.overview, "media_type": media_type,
-        "catalog": catalog, "genres": [g.name for g in (getattr(details, "genres", None) or [])],
+        "description": details.overview,
+        "media_type": media_type,
+        "catalog": catalog,
+        "genres": [g.name for g in (getattr(details, "genres", None) or [])],
         "rating": getattr(details, "vote_average", 0.0),
-        "updated_at": __import__("time").time()
+        "updated_at": time.time(),
     }
     
     lang_map = {"tam": "Tamil", "tamil": "Tamil", "tel": "Telugu", "telugu": "Telugu", "hin": "Hindi", "hindi": "Hindi", "mal": "Malayalam", "malayalam": "Malayalam", "kan": "Kannada", "kannada": "Kannada", "eng": "English", "english": "English", "multi": "Multi"}
@@ -128,17 +362,29 @@ async def _process_message(db, message, chat_id):
         upsert=True
     )
     
-    combined = parse_combined_episodes(filename)
+    old_file = await db.global_db["files"].find_one({"_id": file_id}, {"meta_id": 1})
     file_data = {
-        "_id": file_id, "meta_id": doc_id, "filename": filename,
-        "size": size, "size_str": get_readable_file_size(size), "quality": parsed.get("resolution", "HD"),
-        "chat_id": chat_id, "message_id": message.id,
-        "season": combined["season"] if combined else parsed.get("season"),
-        "episode_start": combined["start"] if combined else parsed.get("episode"),
-        "episode_end": combined["end"] if combined else parsed.get("episode")
+        "_id": file_id,
+        "meta_id": doc_id,
+        "filename": filename,
+        "size": size,
+        "size_str": get_readable_file_size(size),
+        "quality": parsed.get("resolution") or "HD",
+        "chat_id": int(chat_id),
+        "message_id": int(message.id),
+        "season": first_int(combined["season"]) if combined else parsed_season,
+        "episode_start": first_int(combined["start"]) if combined else parsed_episode_start,
+        "episode_end": first_int(combined["end"]) if combined else parsed_episode_end,
+        "indexed_at": time.time(),
     }
     await db.global_db["files"].update_one({"_id": file_id}, {"$set": file_data}, upsert=True)
     await db.global_db["unindexed"].delete_one({"_id": file_id})
+
+    old_meta_id = old_file.get("meta_id") if old_file else None
+    if old_meta_id and old_meta_id != doc_id:
+        remaining = await db.global_db["files"].find_one({"meta_id": old_meta_id}, {"_id": 1})
+        if not remaining:
+            await db.global_db["meta"].delete_one({"_id": old_meta_id})
     return doc_id
 
 
@@ -250,31 +496,117 @@ async def clean_meta_files(db, meta_id: str):
     if to_delete:
         await db.global_db["files"].delete_many({"_id": {"$in": to_delete}})
 
-async def run_global_indexer(db, target_chat_id: int = None, force_historic: bool = False):
-    if getattr(db, "global_db", None) is not None:
-        await get_or_create_global_catalogs(db)
+async def _unprocessed_messages(global_db, chat_id: int, messages: list) -> list:
+    """Filter one Telegram page without loading an entire channel index into RAM."""
+    if not messages:
+        return []
+    by_id = {global_file_key(chat_id, message.id): message for message in messages}
+    keys = list(by_id)
+    existing_files = await global_db["files"].find(
+        {"_id": {"$in": keys}}, {"_id": 1}
+    ).to_list(None)
+    existing_unindexed = await global_db["unindexed"].find(
+        {"_id": {"$in": keys}}, {"_id": 1}
+    ).to_list(None)
+    existing = {row["_id"] for row in existing_files + existing_unindexed}
+    return [message for key, message in by_id.items() if key not in existing]
 
-    global _INDEXER_RUNNING
-    if _INDEXER_RUNNING:
+
+async def _reconcile_stored_references(db, chat_id: int) -> int:
+    """Boundedly remove records whose Telegram messages disappeared offline."""
+    removed = 0
+    seen_ids = set()
+    pending_ids = []
+
+    async def flush() -> bool:
+        nonlocal removed, pending_ids
+        if not pending_ids:
+            return True
+        if await _heartbeat_and_should_stop(db, force=True):
+            return False
+
+        requested = list(pending_ids)
+        messages = await Userbot.get_messages(chat_id, requested)
+        if not isinstance(messages, list):
+            messages = [messages]
+        available = {
+            int(message.id)
+            for message in messages
+            if message
+            and not getattr(message, "empty", False)
+            and (getattr(message, "video", None) or getattr(message, "document", None))
+        }
+        stale = [(chat_id, message_id) for message_id in requested if message_id not in available]
+        if stale:
+            removed += await remove_global_file_references(db.global_db, stale)
+        pending_ids = []
+        return True
+
+    for collection_name in ("files", "unindexed"):
+        cursor = db.global_db[collection_name].find(
+            {"chat_id": {"$in": [int(chat_id), str(int(chat_id))]}},
+            {"message_id": 1},
+        ).batch_size(100)
+        async for row in cursor:
+            message_id = first_int(row.get("message_id"))
+            if message_id is None or message_id in seen_ids:
+                continue
+            seen_ids.add(message_id)
+            pending_ids.append(message_id)
+            if len(pending_ids) >= 100 and not await flush():
+                return removed
+    await flush()
+    return removed
+
+
+async def run_global_indexer(
+    db,
+    target_chat_id: int = None,
+    force_historic: bool = False,
+    _already_claimed: bool = False,
+    _lease_claimed: bool = False,
+):
+    global _INDEXER_RUNNING, _INDEXER_STOP_REQUESTED, _INDEXER_TASK
+    if _INDEXER_RUNNING and not _already_claimed:
         LOGGER.info("[GLOBAL INDEXER] Already running.")
         return
-        
-    if getattr(db, "global_db", None) is None:
-        LOGGER.info("[GLOBAL INDEXER] No Global DB configured. Skipping.")
-        return
-        
-    if not Userbot:
-        LOGGER.info("[GLOBAL INDEXER] No Userbot configured. Skipping.")
-        return
-        
-    _INDEXER_RUNNING = True
-    LOGGER.info("[GLOBAL INDEXER] Started.")
-    import time
+    if not _already_claimed:
+        _INDEXER_RUNNING = True
+        _INDEXER_STOP_REQUESTED = False
+        _INDEXER_STATUS.update(
+            {
+                "running": True,
+                "stop_requested": False,
+                "processed": 0,
+                "current_chat": None,
+                "current_filter": None,
+                "last_error": None,
+            }
+        )
+
     last_log_time = time.time()
     total_processed = 0
     try:
-        updated_meta_ids = set()
-        
+        if getattr(db, "global_db", None) is None:
+            _INDEXER_STATUS["last_error"] = "No GlobalDB configured."
+            LOGGER.info("[GLOBAL INDEXER] No GlobalDB configured. Skipping.")
+            return
+        if not _lease_claimed:
+            _lease_claimed = await _acquire_indexer_lease(
+                db, target_chat_id, force_historic
+            )
+            if not _lease_claimed:
+                _INDEXER_STATUS["last_error"] = "Another indexer owns the active lease."
+                LOGGER.info("[GLOBAL INDEXER] Another replica is already running.")
+                return
+        if not Userbot:
+            _INDEXER_STATUS["last_error"] = "No Userbot configured."
+            LOGGER.info("[GLOBAL INDEXER] No Userbot configured. Skipping.")
+            return
+
+        await _heartbeat_and_should_stop(db, force=True)
+        await get_or_create_global_catalogs(db)
+        LOGGER.info("[GLOBAL INDEXER] Started.")
         if target_chat_id:
             target_ids = [target_chat_id]
         else:
@@ -283,8 +615,14 @@ async def run_global_indexer(db, target_chat_id: int = None, force_historic: boo
             target_ids = _resolve_channel_ids(settings.global_search_channels)
         
         for chat_id in target_ids:
+            if await _heartbeat_and_should_stop(db, force=True):
+                break
+            _INDEXER_STATUS["current_chat"] = chat_id
             try:
                 for msg_filter in (enums.MessagesFilter.VIDEO, enums.MessagesFilter.DOCUMENT):
+                    if await _heartbeat_and_should_stop(db, force=True):
+                        break
+                    _INDEXER_STATUS["current_filter"] = msg_filter.name
                     sync_key = f"sync_{chat_id}_{msg_filter.name}"
                     sync_state = await db.global_db["state"].find_one({"_id": sync_key}) or {}
                     
@@ -298,45 +636,70 @@ async def run_global_indexer(db, target_chat_id: int = None, force_historic: boo
                         LOGGER.info(f"[INDEXER] {chat_id} ({msg_filter.name}) - Historic scan from offset {offset_id} (last seen {last_id})")
                         highest_seen = last_id
                         try:
-                            fetched_count = 0
-                            
-                            # Grab existing message IDs from our DB so we don't reprocess them!
-                            # This completely prevents duplication and allows "resuming" without wiping!
-                            existing_files = await db.global_db["files"].find({"chat_id": {"$in": [chat_id, str(chat_id)]}}, {"message_id": 1}).to_list(None)
-                            existing_unidx = await db.global_db["unindexed"].find({"chat_id": {"$in": [chat_id, str(chat_id)]}}, {"message_id": 1}).to_list(None)
-                            processed_ids = {doc["message_id"] for doc in existing_files} | {doc["message_id"] for doc in existing_unidx}
-                            
+                            message_batch = []
                             async for msg in Userbot.search_messages(chat_id, filter=msg_filter):
-                                if not _INDEXER_RUNNING: break
-                                
+                                if await _heartbeat_and_should_stop(db):
+                                    break
                                 if offset_id > 0 and msg.id >= offset_id:
                                     continue
-                                    
-                                if msg.id > highest_seen: 
-                                    highest_seen = msg.id
-                                    
-                                # If we ALREADY indexed this file previously, skip it completely!
-                                if msg.id in processed_ids:
+                                highest_seen = max(highest_seen, msg.id)
+                                message_batch.append(msg)
+                                if len(message_batch) < 100:
                                     continue
-                                    
-                                mid = await _process_message(db, msg, chat_id)
-                                if mid:
-                                    updated_meta_ids.add(mid)
-                                count += 1
-                                total_processed += 1
-                                if time.time() - last_log_time >= 120:
-                                    LOGGER.info(f"[GLOBAL INDEXER] Still running... Indexed {total_processed} items so far.")
-                                    last_log_time = time.time()
-                                fetched_count += 1
-                                
-                                if fetched_count % 50 == 0:
-                                    await db.global_db["state"].update_one(
-                                        {"_id": sync_key}, 
-                                        {"$set": {"historic_offset_id": msg.id, "last_id": highest_seen}}, 
-                                        upsert=True
+
+                                stop_during_batch = False
+                                for candidate in (
+                                    message_batch
+                                    if force_historic
+                                    else await _unprocessed_messages(
+                                        db.global_db, chat_id, message_batch
                                     )
-                                    
-                            if _INDEXER_RUNNING:
+                                ):
+                                    if await _heartbeat_and_should_stop(db):
+                                        stop_during_batch = True
+                                        break
+                                    await _process_message(db, candidate, chat_id)
+                                    count += 1
+                                    total_processed += 1
+                                _INDEXER_STATUS["processed"] = total_processed
+                                if stop_during_batch:
+                                    break
+                                if time.time() - last_log_time >= 120:
+                                    LOGGER.info(
+                                        "[GLOBAL INDEXER] Still running... "
+                                        f"Indexed {total_processed} items so far."
+                                    )
+                                    last_log_time = time.time()
+                                await db.global_db["state"].update_one(
+                                    {"_id": sync_key},
+                                    {"$set": {
+                                        "historic_offset_id": message_batch[-1].id,
+                                        "last_id": highest_seen,
+                                    }},
+                                    upsert=True,
+                                )
+                                message_batch = []
+
+                            if not _INDEXER_STOP_REQUESTED and message_batch:
+                                stop_during_batch = False
+                                for candidate in (
+                                    message_batch
+                                    if force_historic
+                                    else await _unprocessed_messages(
+                                        db.global_db, chat_id, message_batch
+                                    )
+                                ):
+                                    if await _heartbeat_and_should_stop(db):
+                                        stop_during_batch = True
+                                        break
+                                    await _process_message(db, candidate, chat_id)
+                                    count += 1
+                                    total_processed += 1
+                                _INDEXER_STATUS["processed"] = total_processed
+                                if stop_during_batch:
+                                    break
+
+                            if not _INDEXER_STOP_REQUESTED:
                                 await db.global_db["state"].update_one(
                                     {"_id": sync_key}, 
                                     {"$set": {"historic_done": True, "historic_offset_id": 0, "last_id": highest_seen}}, 
@@ -344,23 +707,30 @@ async def run_global_indexer(db, target_chat_id: int = None, force_historic: boo
                                 )
                                 LOGGER.info(f"[INDEXER] {chat_id} ({msg_filter.name}) - Historic scan complete!")
                         except FloodWait as fw:
-                            await asyncio.sleep(getattr(fw, "value", 5))
+                            _INDEXER_STATUS["last_error"] = (
+                                f"FloodWait while scanning {chat_id}; run can be resumed."
+                            )
+                            await _lease_aware_sleep(db, getattr(fw, "value", 5))
                         except Exception as e:
+                            _INDEXER_STATUS["last_error"] = (
+                                f"Historic scan {chat_id}: {type(e).__name__}: {e}"
+                            )
                             LOGGER.error(f"[INDEXER] Error in historic scan {chat_id}: {e}")
                     else:
                         LOGGER.info(f"[INDEXER] {chat_id} ({msg_filter.name}) - Syncing new files (Newer than {last_id})")
                         highest_seen = last_id
                         try:
                             async for msg in Userbot.search_messages(chat_id, filter=msg_filter):
-                                if not _INDEXER_RUNNING: break
-                                if msg.id <= last_id: break
+                                if await _heartbeat_and_should_stop(db):
+                                    break
+                                if msg.id <= last_id:
+                                    break
                                 if msg.id > highest_seen: highest_seen = msg.id
                                     
-                                mid = await _process_message(db, msg, chat_id)
-                                if mid:
-                                    updated_meta_ids.add(mid)
+                                await _process_message(db, msg, chat_id)
                                 count += 1
                                 total_processed += 1
+                                _INDEXER_STATUS["processed"] = total_processed
                                 if time.time() - last_log_time >= 120:
                                     LOGGER.info(f"[GLOBAL INDEXER] Still running... Indexed {total_processed} items so far.")
                                     last_log_time = time.time()
@@ -372,16 +742,76 @@ async def run_global_indexer(db, target_chat_id: int = None, force_historic: boo
                                     upsert=True
                                 )
                         except FloodWait as fw:
-                            await asyncio.sleep(getattr(fw, "value", 5))
+                            _INDEXER_STATUS["last_error"] = (
+                                f"FloodWait while syncing {chat_id}; run can be resumed."
+                            )
+                            await _lease_aware_sleep(db, getattr(fw, "value", 5))
                         except Exception as e:
+                            _INDEXER_STATUS["last_error"] = (
+                                f"Incremental sync {chat_id}: {type(e).__name__}: {e}"
+                            )
                             LOGGER.error(f"[INDEXER] Error in new sync {chat_id}: {e}")
-                            
+
+                if force_historic and not _INDEXER_STOP_REQUESTED:
+                    _INDEXER_STATUS["current_filter"] = "RECONCILE"
+                    stale_count = await _reconcile_stored_references(db, chat_id)
+                    LOGGER.info(
+                        "[GLOBAL INDEXER] Reconciled %s stale record(s) for %s.",
+                        stale_count,
+                        chat_id,
+                    )
                 LOGGER.info(f"[GLOBAL INDEXER] Finished {chat_id}. Processed {count} items.")
             except Exception as e:
+                _INDEXER_STATUS["last_error"] = (
+                    f"Channel {chat_id}: {type(e).__name__}: {e}"
+                )
                 LOGGER.error(f"[GLOBAL INDEXER] Error handling {chat_id}: {e}")
                 
     except Exception as e:
+        _INDEXER_STATUS["last_error"] = f"{type(e).__name__}: {e}"
         LOGGER.error(f"[GLOBAL INDEXER] Fatal Error: {e}")
     finally:
+        stopped = _INDEXER_STOP_REQUESTED
+        final_status = (
+            "failed"
+            if _INDEXER_STATUS.get("last_error")
+            else "stopped"
+            if stopped
+            else "completed"
+        )
+        finished_at = datetime.now(timezone.utc)
+        if _lease_claimed and getattr(db, "global_db", None) is not None:
+            try:
+                await db.global_db["state"].update_one(
+                    {
+                        "_id": "global_indexer_job",
+                        "owner": _INDEXER_OWNER,
+                    },
+                    {"$set": {
+                        "running": False,
+                        "status": final_status,
+                        "stop_requested": False,
+                        "processed": total_processed,
+                        "current_chat": None,
+                        "current_filter": None,
+                        "last_error": _INDEXER_STATUS.get("last_error"),
+                        "finished_at": finished_at,
+                        "lease_until": finished_at,
+                    }},
+                )
+            except Exception as exc:
+                LOGGER.error("[GLOBAL INDEXER] Failed to release durable lease: %s", exc)
         _INDEXER_RUNNING = False
-        LOGGER.info("[GLOBAL INDEXER] Engine offline.")
+        _INDEXER_STOP_REQUESTED = False
+        _INDEXER_TASK = None
+        _INDEXER_STATUS.update(
+            {
+                "running": False,
+                "status": final_status,
+                "stop_requested": False,
+                "current_chat": None,
+                "current_filter": None,
+                "finished_at": finished_at,
+            }
+        )
+        LOGGER.info("[GLOBAL INDEXER] Engine offline (%s).", final_status)

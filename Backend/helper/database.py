@@ -1,7 +1,7 @@
 import re
 import secrets
 import string
-from asyncio import create_task
+from asyncio import Lock, create_task
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -44,26 +44,138 @@ class Database:
         self.current_db_index = 1
         self._global_client = None
         self._global_db = None
+        self._global_uri = ""
+        self._global_connect_lock = Lock()
 
     @property
     def global_db(self):
-        if self._global_db is None:
-            from Backend.helper.settings_manager import SettingsManager
-            global_uri = SettingsManager.current().global_database_uri
-            if global_uri:
-                try:
-                    import motor.motor_asyncio
-                    
-                    if not global_uri.startswith("mongodb://") and not global_uri.startswith("mongodb+srv://"):
-                        LOGGER.warning("Invalid GLOBAL_DATABASE_URI format. Skipping connection.")
-                        return None
-                        
-                    self._global_client = motor.motor_asyncio.AsyncIOMotorClient(global_uri)
-                    self._global_db = self._global_client[self.db_name]
-                    LOGGER.info("Connected to Dedicated Global Search Cluster!")
-                except Exception as ge:
-                    LOGGER.error(f"Failed to connect to Global Database URI: {ge}")
+        """Return the configured GlobalDB handle without doing network I/O.
+
+        Connections are established explicitly by ``configure_global_database``
+        after settings load. Keeping this property side-effect free prevents many
+        simultaneous web requests from racing to create Motor clients.
+        """
         return self._global_db
+
+    @property
+    def global_database_uri(self) -> str:
+        return self._global_uri
+
+    async def configure_global_database(self, uri: str = "") -> Dict[str, Any]:
+        """Atomically enable, replace, or disable the dedicated GlobalDB.
+
+        A replacement client is pinged and indexed before it becomes visible.
+        If validation fails, the currently working GlobalDB remains active.
+        """
+        uri = str(uri or "").strip()
+        async with self._global_connect_lock:
+            if uri == self._global_uri and (not uri or self._global_db is not None):
+                return {
+                    "ok": True,
+                    "enabled": bool(uri),
+                    "changed": False,
+                    "message": "GlobalDB configuration unchanged.",
+                }
+
+            if uri and not uri.startswith(("mongodb://", "mongodb+srv://")):
+                return {
+                    "ok": False,
+                    "enabled": bool(self._global_db),
+                    "changed": False,
+                    "message": "GlobalDB URI must start with mongodb:// or mongodb+srv://.",
+                }
+
+            if not uri:
+                old_client = self._global_client
+                self._global_client = None
+                self._global_db = None
+                self._global_uri = ""
+                if old_client is not None:
+                    old_client.close()
+                LOGGER.info("GlobalDB disabled.")
+                return {
+                    "ok": True,
+                    "enabled": False,
+                    "changed": True,
+                    "message": "GlobalDB disabled.",
+                }
+
+            candidate = motor.motor_asyncio.AsyncIOMotorClient(
+                uri,
+                serverSelectionTimeoutMS=10_000,
+                connectTimeoutMS=10_000,
+                socketTimeoutMS=30_000,
+                maxPoolSize=50,
+                retryReads=True,
+                retryWrites=True,
+            )
+            try:
+                await candidate.admin.command("ping")
+                candidate_db = candidate[self.db_name]
+                await self._ensure_global_indexes(candidate_db)
+            except Exception as exc:
+                candidate.close()
+                LOGGER.error("GlobalDB connection validation failed: %s", exc)
+                return {
+                    "ok": False,
+                    "enabled": bool(self._global_db),
+                    "changed": False,
+                    "message": f"GlobalDB connection failed: {type(exc).__name__}",
+                }
+
+            old_client = self._global_client
+            self._global_client = candidate
+            self._global_db = candidate_db
+            self._global_uri = uri
+            if old_client is not None and old_client is not candidate:
+                old_client.close()
+
+            LOGGER.info("GlobalDB connected and indexes verified.")
+            return {
+                "ok": True,
+                "enabled": True,
+                "changed": True,
+                "message": "GlobalDB connected and indexes verified.",
+            }
+
+    async def _ensure_global_indexes(self, global_db) -> None:
+        """Create the indexes used by GlobalDB catalog, stream, and admin flows."""
+        index_specs = {
+            "files": [
+                [("chat_id", ASCENDING), ("message_id", ASCENDING)],
+                [
+                    ("meta_id", ASCENDING),
+                    ("season", ASCENDING),
+                    ("episode_start", ASCENDING),
+                    ("episode_end", ASCENDING),
+                ],
+                [("meta_id", ASCENDING), ("quality", ASCENDING), ("size", DESCENDING)],
+                [("indexed_at", DESCENDING)],
+            ],
+            "meta": [
+                [("catalog", ASCENDING), ("updated_at", DESCENDING)],
+                [("media_type", ASCENDING), ("updated_at", DESCENDING)],
+                [("imdb_id", ASCENDING)],
+                [("tmdb_id", ASCENDING)],
+                [("aliases", ASCENDING)],
+                [("languages", ASCENDING)],
+                [("genres", ASCENDING)],
+            ],
+            "unindexed": [
+                [("chat_id", ASCENDING), ("message_id", ASCENDING)],
+                [("reason", ASCENDING)],
+                [("updated_at", DESCENDING)],
+            ],
+            "catalogs": [[("order", ASCENDING)]],
+        }
+        for collection_name, specs in index_specs.items():
+            for keys in specs:
+                await global_db[collection_name].create_index(keys)
+        await global_db["state"].update_one(
+            {"_id": "schema"},
+            {"$set": {"version": 3, "updated_at": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
 
     async def connect(self):
         try:
@@ -146,7 +258,12 @@ class Database:
     async def disconnect(self):
         for client in self.clients.values():
             client.close()
-        LOGGER.info("All database connections closed.")
+        if self._global_client is not None:
+            self._global_client.close()
+        self._global_client = None
+        self._global_db = None
+        self._global_uri = ""
+        LOGGER.info("All database connections, including GlobalDB, closed.")
 
     async def update_current_db_index(self):
         await self.dbs["tracking"]["state"].update_one(

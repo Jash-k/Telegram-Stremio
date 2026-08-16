@@ -1,18 +1,19 @@
-from pyrogram.file_id import FileId
-from typing import Optional
-from Backend.logger import LOGGER
-from Backend import __version__, now, timezone
-from Backend.helper.settings_manager import SettingsManager
-from Backend.helper.exceptions import FileNotFound
-from Backend.helper.split_files import strip_part_suffix
-from aiofiles import open as aiopen
-from aiofiles.os import path as aiopath, remove as aioremove
-from pyrogram import Client
-from Backend.pyrofork.bot import StreamBot
 import re
-from pyrogram.types import BotCommand
-from pyrogram import enums
+from typing import Optional
 
+from aiofiles import open as aiopen
+from aiofiles.os import path as aiopath
+from aiofiles.os import remove as aioremove
+from pyrogram import Client, enums
+from pyrogram.file_id import FileId
+from pyrogram.types import BotCommand
+
+from Backend import __version__, now, timezone
+from Backend.helper.exceptions import FileNotFound
+from Backend.helper.settings_manager import SettingsManager
+from Backend.helper.split_files import strip_part_suffix
+from Backend.logger import LOGGER
+from Backend.pyrofork.bot import StreamBot
 
 _EMOJI_PATTERN = re.compile(
     "["
@@ -78,6 +79,10 @@ async def get_file_ids(client: Client, chat_id: int, message_id: int) -> Optiona
             return file_id_obj
         else:
             raise FileNotFound("No supported media found in message")
+    except FileNotFound:
+        # Missing/deleted messages are an expected stale-link condition. The
+        # stream route maps this to 404 and temporarily negative-caches it.
+        raise
     except Exception as e:
         LOGGER.error(f"Error getting file IDs: {e}")
         raise
