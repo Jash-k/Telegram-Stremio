@@ -1429,12 +1429,17 @@ async def migrate_global_db(_: bool = Depends(require_auth)):
                         if re.search(rf"\b{key}\b", fname_lower):
                             languages.add(value)
 
-                    start_episode, end_episode = episode_bounds(
+                    start_low, start_high = episode_bounds(
                         file_doc.get("episode_start")
                     )
-                    stored_end = first_int(file_doc.get("episode_end"))
-                    if stored_end is not None:
-                        end_episode = max(end_episode or stored_end, stored_end)
+                    end_low, end_high = episode_bounds(file_doc.get("episode_end"))
+                    bounds = [
+                        value
+                        for value in (start_low, start_high, end_low, end_high)
+                        if value is not None
+                    ]
+                    start_episode = min(bounds) if bounds else None
+                    end_episode = max(bounds) if bounds else None
                     await db.global_db["files"].update_one(
                         {"_id": file_doc["_id"]},
                         {"$set": {

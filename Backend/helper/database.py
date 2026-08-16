@@ -143,12 +143,11 @@ class Database:
         index_specs = {
             "files": [
                 [("chat_id", ASCENDING), ("message_id", ASCENDING)],
-                [
-                    ("meta_id", ASCENDING),
-                    ("season", ASCENDING),
-                    ("episode_start", ASCENDING),
-                    ("episode_end", ASCENDING),
-                ],
+                # Keep episode bounds in separate indexes. Legacy GlobalDB rows
+                # may contain arrays in both fields, and MongoDB rejects a
+                # compound index containing two parallel array paths (code 171).
+                [("meta_id", ASCENDING), ("season", ASCENDING), ("episode_start", ASCENDING)],
+                [("meta_id", ASCENDING), ("season", ASCENDING), ("episode_end", ASCENDING)],
                 [("meta_id", ASCENDING), ("quality", ASCENDING), ("size", DESCENDING)],
                 [("indexed_at", DESCENDING)],
             ],
