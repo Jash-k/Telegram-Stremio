@@ -1,24 +1,37 @@
-FROM ghcr.io/astral-sh/uv:debian-slim
+FROM python:3.11-slim-bookworm
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
-ENV LANG=en_US.UTF-8
-ENV PATH="/app/.venv/bin:$PATH"
+# Pin uv separately from the Debian/Python base so a moving uv image cannot
+# silently change the OS repositories used by apt.
+COPY --from=ghcr.io/astral-sh/uv:0.12.0 /uv /uvx /bin/
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    UV_PYTHON_DOWNLOADS=0 \
+    UV_NO_DEV=1 \
+    UV_LINK_MODE=copy \
+    PATH="/app/.venv/bin:$PATH"
+
+# Use a stable Debian release, retry transient mirror failures, avoid mixed tab
+# indentation, and remove package indexes in the same layer.
+RUN set -eux; \
+    apt-get -o Acquire::Retries=5 update; \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+        bash \
         build-essential \
-	bash \
-        git \
-        curl \
         ca-certificates \
-        locales && \
-    locale-gen en_US.UTF-8 && \
+        git; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Keep dependency installation cacheable and reproducible. Do not regenerate
+# uv.lock during an image build.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev --no-install-project
+
 COPY . .
-RUN uv lock
-RUN uv sync --locked
-RUN chmod +x start.sh
+RUN uv sync --locked --no-dev && chmod +x start.sh
+
 CMD ["bash", "start.sh"]
