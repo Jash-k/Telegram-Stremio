@@ -1,28 +1,18 @@
-FROM python:3.11-slim-bookworm
+# The non-slim official image inherits the buildpack-deps toolchain, Git, Bash,
+# and CA certificates. Pinning its multi-platform digest lets this build avoid
+# apt entirely, which also avoids deployment-builder mirror/repository failures.
+FROM python:3.11.15-bookworm@sha256:a8f8fbe1a0edc9e4dddafa64ba73f7e04be7be5ebc23f332362e779e0a2e4e52
 
-# Pin uv separately from the Debian/Python base so a moving uv image cannot
-# silently change the OS repositories used by apt.
-COPY --from=ghcr.io/astral-sh/uv:0.12.0 /uv /uvx /bin/
+# Pin uv by both release and multi-platform digest.
+COPY --from=ghcr.io/astral-sh/uv:0.12.0@sha256:606e70c71c852d03f611b1e56a195d08648507018a7057fab82c4974c4eae105 /uv /uvx /bin/
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
+ENV PYTHONUNBUFFERED=1 \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     UV_PYTHON_DOWNLOADS=0 \
     UV_NO_DEV=1 \
     UV_LINK_MODE=copy \
     PATH="/app/.venv/bin:$PATH"
-
-# Use a stable Debian release, retry transient mirror failures, avoid mixed tab
-# indentation, and remove package indexes in the same layer.
-RUN set -eux; \
-    apt-get -o Acquire::Retries=5 update; \
-    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-        bash \
-        build-essential \
-        ca-certificates \
-        git; \
-    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
