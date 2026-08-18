@@ -1,5 +1,4 @@
 import asyncio
-from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -130,7 +129,6 @@ from Backend.fastapi.security.credentials import require_auth
 from Backend.pyrofork.bot import work_loads_summary
 
 _CLEANUP_RUNNING = False
-_MIGRATE_RUNNING = False
 
 templates = Jinja2Templates(directory="Backend/fastapi/templates")
 
@@ -884,6 +882,7 @@ async def delete_unindexed(file_id: str, _: bool = Depends(require_auth)):
 async def wipe_global_db(_: bool = Depends(require_auth)):
     from Backend import db
     from Backend.helper import global_indexer
+    from Backend.helper.global_migration import global_migration_status
 
     if getattr(db, "global_db", None) is not None:
         indexer_status = await global_indexer.global_indexer_status(db)
@@ -891,6 +890,11 @@ async def wipe_global_db(_: bool = Depends(require_auth)):
             return {
                 "status": "error",
                 "message": "Stop the GlobalDB indexer before wiping data.",
+            }
+        if (await global_migration_status(db)).get("running"):
+            return {
+                "status": "error",
+                "message": "Stop the GlobalDB migration before wiping data.",
             }
         await db.global_db["files"].delete_many({})
         await db.global_db["meta"].delete_many({})
@@ -1323,158 +1327,35 @@ async def get_global_meta_files(meta_id: str, _: bool = Depends(require_auth)):
 
 @app.post("/api/admin/global/migrate")
 async def migrate_global_db(_: bool = Depends(require_auth)):
-    global _MIGRATE_RUNNING
-    if _MIGRATE_RUNNING:
-        return {"status": "error", "message": "Migration is already running."}
-        
     from Backend import db
-    import asyncio
+    from Backend.helper import global_indexer
+    from Backend.helper.global_migration import start_global_migration
+
     if getattr(db, "global_db", None) is None:
         return {"status": "error", "message": "No global database configured."}
-    from Backend.helper import global_indexer
     if (await global_indexer.global_indexer_status(db)).get("running"):
         return {"status": "error", "message": "Stop the indexer before migration."}
     if _CLEANUP_RUNNING:
         return {"status": "error", "message": "Wait for cleanup to finish."}
 
-    _MIGRATE_RUNNING = True
-        
-    async def run_migrate():
-        global _MIGRATE_RUNNING
-        from Backend.helper.global_db_service import episode_bounds, first_int
-        from Backend.helper.metadata import _tmdb_details
-        from Backend.logger import LOGGER
+    result = await start_global_migration(db)
+    return {
+        "status": "success" if result.get("ok") else "error",
+        "message": result.get("message", "Migration could not start."),
+    }
 
-        try:
-            total_meta = await db.global_db["meta"].count_documents({})
-            cursor = db.global_db["meta"].find({})
-            import re
-            import time
 
-            last_log = time.time()
-            processed = 0
-            async for meta in cursor:
-                processed += 1
-                tmdb_id = first_int(meta.get("tmdb_id"))
-                media_type = meta.get("media_type")
-                details = None
-                if tmdb_id and media_type:
-                    details = await _tmdb_details(
-                        "tv" if media_type == "series" else "movie", tmdb_id
-                    )
+@app.post("/api/admin/global/migrate/stop")
+async def stop_global_migration(_: bool = Depends(require_auth)):
+    from Backend import db
+    from Backend.helper.global_migration import request_global_migration_stop
 
-                meta_id = str(meta["_id"])
-                is_song = meta_id.startswith("song:")
-                actual_imdb_id = None
-                if details:
-                    external_ids = getattr(details, "external_ids", None)
-                    actual_imdb_id = (
-                        external_ids.get("imdb_id")
-                        if isinstance(external_ids, dict)
-                        else getattr(external_ids, "imdb_id", None)
-                        if external_ids
-                        else None
-                    )
-                public_imdb_id = (
-                    f"song:{actual_imdb_id}"
-                    if is_song and actual_imdb_id
-                    else actual_imdb_id
-                )
-                existing_imdb_id = str(meta.get("imdb_id") or "")
-                if not public_imdb_id and existing_imdb_id.startswith(
-                    ("tt", "song:tt")
-                ):
-                    public_imdb_id = existing_imdb_id
+    requested = await request_global_migration_stop(db)
+    return {
+        "status": "success" if requested else "error",
+        "message": "Migration stop requested." if requested else "Migration is not running.",
+    }
 
-                update_fields = {
-                    "tmdb_id": tmdb_id,
-                    "imdb_id": public_imdb_id,
-                    "aliases": [
-                        value for value in (meta_id, public_imdb_id) if value
-                    ],
-                    "updated_at": time.time(),
-                }
-                if details:
-                    year_value = getattr(details, "release_date", None) or getattr(
-                        details, "first_air_date", ""
-                    )
-                    year_number = getattr(year_value, "year", None)
-                    if year_number is None:
-                        year_match = re.search(
-                            r"\b(19\d{2}|20\d{2})\b", str(year_value or "")
-                        )
-                        year_number = int(year_match.group(1)) if year_match else None
-                    update_fields.update(
-                        {
-                            "year": year_number,
-                            "rating": getattr(details, "vote_average", 0.0),
-                        }
-                    )
-
-                languages = set(meta.get("languages") or [])
-                if details and getattr(details, "original_language", "") == "ta":
-                    languages.add("Tamil")
-                files_cursor = db.global_db["files"].find({"meta_id": meta_id})
-                async for file_doc in files_cursor:
-                    filename = file_doc.get("filename", "")
-                    fname_lower = filename.lower()
-                    language_map = {
-                        "tam": "Tamil", "tamil": "Tamil", "tel": "Telugu",
-                        "telugu": "Telugu", "hin": "Hindi", "hindi": "Hindi",
-                        "mal": "Malayalam", "malayalam": "Malayalam",
-                        "kan": "Kannada", "kannada": "Kannada", "eng": "English",
-                        "english": "English", "multi": "Multi",
-                    }
-                    for key, value in language_map.items():
-                        if re.search(rf"\b{key}\b", fname_lower):
-                            languages.add(value)
-
-                    start_low, start_high = episode_bounds(
-                        file_doc.get("episode_start")
-                    )
-                    end_low, end_high = episode_bounds(file_doc.get("episode_end"))
-                    bounds = [
-                        value
-                        for value in (start_low, start_high, end_low, end_high)
-                        if value is not None
-                    ]
-                    start_episode = min(bounds) if bounds else None
-                    end_episode = max(bounds) if bounds else None
-                    await db.global_db["files"].update_one(
-                        {"_id": file_doc["_id"]},
-                        {"$set": {
-                            "chat_id": int(file_doc["chat_id"]),
-                            "message_id": int(file_doc["message_id"]),
-                            "season": first_int(file_doc.get("season")),
-                            "episode_start": start_episode,
-                            "episode_end": end_episode,
-                            "indexed_at": file_doc.get("indexed_at") or time.time(),
-                        }},
-                    )
-
-                update_fields["languages"] = sorted(languages)
-                await db.global_db["meta"].update_one(
-                    {"_id": meta_id}, {"$set": update_fields}
-                )
-                if time.time() - last_log >= 120:
-                    LOGGER.info(
-                        "[GLOBAL MIGRATE] Processed %s/%s metadata groups.",
-                        processed,
-                        total_meta,
-                    )
-                    last_log = time.time()
-            await db.global_db["state"].update_one(
-                {"_id": "schema"},
-                {"$set": {"version": 3, "data_migrated_at": datetime.now(timezone.utc)}},
-                upsert=True,
-            )
-        except Exception as exc:
-            LOGGER.error("[GLOBAL MIGRATE] Failed: %s", exc)
-        finally:
-            _MIGRATE_RUNNING = False
-
-    asyncio.create_task(run_migrate())
-    return {"status": "success", "message": "Migration started in the background!"}
 
 @app.post("/api/admin/global/cleanup")
 async def cleanup_global_db(_: bool = Depends(require_auth)):
@@ -1489,9 +1370,11 @@ async def cleanup_global_db(_: bool = Depends(require_auth)):
     if getattr(db, "global_db", None) is None:
         return {"status": "error", "message": "No global database configured."}
     from Backend.helper import global_indexer
+    from Backend.helper.global_migration import global_migration_status
+
     if (await global_indexer.global_indexer_status(db)).get("running"):
         return {"status": "error", "message": "Stop the indexer before cleanup."}
-    if _MIGRATE_RUNNING:
+    if (await global_migration_status(db)).get("running"):
         return {"status": "error", "message": "Wait for migration to finish."}
 
     _CLEANUP_RUNNING = True
@@ -1519,8 +1402,12 @@ async def cleanup_global_db(_: bool = Depends(require_auth)):
 
 @app.get("/api/admin/global/tasks/status")
 async def global_tasks_status(_: bool = Depends(require_auth)):
-    global _CLEANUP_RUNNING, _MIGRATE_RUNNING
+    from Backend import db
+    from Backend.helper.global_migration import global_migration_status
+
+    migration = await global_migration_status(db)
     return {
         "cleanup_running": _CLEANUP_RUNNING,
-        "migrate_running": _MIGRATE_RUNNING
+        "migrate_running": bool(migration.get("running")),
+        "migration": migration,
     }

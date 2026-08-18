@@ -1,3 +1,15 @@
+def stream_read_ahead(
+    part_count: int,
+    max_parallelism: int = 4,
+    max_prefetch: int = 8,
+) -> tuple[int, int]:
+    """Return bounded parallel Telegram reads and ordered queue capacity."""
+    parts = max(1, int(part_count or 1))
+    parallelism = min(max(1, int(max_parallelism)), parts)
+    prefetch = min(max(1, int(max_prefetch)), parts, max(2, parallelism * 2))
+    return parallelism, max(1, prefetch)
+
+
 def chunk_window(start: int, end: int, chunk_size: int) -> tuple[int, int, int, int]:
     """Return Telegram chunk parameters for an inclusive HTTP byte range.
 

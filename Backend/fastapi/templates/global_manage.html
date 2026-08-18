@@ -293,6 +293,7 @@ let unidxPage = 1;
 let unidxTotalPages = 1;
 
 let isIndexerRunning = false;
+let isMigrationRunning = false;
 let currentActiveCallback = null;
 
 function switchView(viewName) {
@@ -390,18 +391,27 @@ async function cleanupDatabase() {
 }
 
 async function migrateDatabase() {
-    if (!confirm('This will scan all your existing database records, fetch missing TMDB ratings, and extract languages from the filenames to enable the new Dropdown Filters. Continue?')) return;
-    
     const btn = document.getElementById('btn-migrate');
+    if (isMigrationRunning) {
+        if (!confirm('Stop migration after the current batch? Progress is saved and the next run will resume.')) return;
+        if (btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Stopping...';
+        const res = await fetch('/api/admin/global/migrate/stop', { method: 'POST' });
+        const data = await res.json();
+        if (data.status !== 'success') alert(`Error: ${data.message}`);
+        setTimeout(checkTasks, 1500);
+        return;
+    }
+
+    if (!confirm('Run the fast resumable GlobalDB migration? File records are updated in bulk and metadata is fetched concurrently.')) return;
     if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Starting Migration...'; }
-    
+
     const res = await fetch('/api/admin/global/migrate', { method: 'POST' });
     const data = await res.json();
-    
     if (data.status === 'success') {
         checkTasks();
         alert(data.message);
     } else {
+        if (btn) btn.disabled = false;
         alert(`Error: ${data.message}`);
     }
 }
@@ -475,7 +485,6 @@ async function checkTasks() {
         if (data.cleanup_running) {
             if (cleanBtn) { cleanBtn.disabled = true; cleanBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Cleaning...'; }
             if (cleanLbl) { cleanLbl.textContent = 'RUNNING'; cleanLbl.style.color = '#22c55e'; }
-            setTimeout(checkTasks, 5000);
         } else {
             if (cleanBtn) { cleanBtn.disabled = false; cleanBtn.innerHTML = '<i class="fa-solid fa-broom"></i> Cleanup DB'; }
             if (cleanLbl) { cleanLbl.textContent = 'IDLE'; cleanLbl.style.color = 'var(--text-sec)'; }
@@ -483,14 +492,31 @@ async function checkTasks() {
         
         const migBtn = document.getElementById('btn-migrate');
         const migLbl = document.getElementById('lbl-migrate-status');
-        if (data.migrate_running) {
-            if (migBtn) { migBtn.disabled = true; migBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Migrating...'; }
-            if (migLbl) { migLbl.textContent = 'RUNNING'; migLbl.style.color = '#22c55e'; }
-            if (!data.cleanup_running) setTimeout(checkTasks, 5000);
+        const migration = data.migration || {};
+        isMigrationRunning = !!data.migrate_running;
+        if (isMigrationRunning) {
+            const phase = migration.phase || 'files';
+            const done = phase === 'files' ? (migration.files_processed || 0) : (migration.meta_processed || 0);
+            const total = phase === 'files' ? (migration.total_files || 0) : (migration.total_meta || 0);
+            const progress = total ? `${done}/${total}` : `${done}`;
+            if (migBtn) {
+                migBtn.disabled = false;
+                migBtn.innerHTML = '<i class="fa-solid fa-stop"></i> Stop Migration';
+            }
+            if (migLbl) {
+                migLbl.textContent = `${phase.toUpperCase()} ${progress}`;
+                migLbl.style.color = '#22c55e';
+            }
         } else {
             if (migBtn) { migBtn.disabled = false; migBtn.innerHTML = '<i class="fa-solid fa-wrench"></i> Migrate Metadata'; }
-            if (migLbl) { migLbl.textContent = 'IDLE'; migLbl.style.color = 'var(--text-sec)'; }
+            if (migLbl) {
+                const status = migration.status || 'idle';
+                migLbl.textContent = status.replaceAll('_', ' ').toUpperCase();
+                migLbl.style.color = status === 'failed' || status === 'expired' ? '#ef4444' : 'var(--text-sec)';
+                if (migration.last_error) migLbl.title = migration.last_error;
+            }
         }
+        if (data.cleanup_running || isMigrationRunning) setTimeout(checkTasks, 3000);
     } catch(e) {}
 }
 

@@ -18,7 +18,7 @@ from Backend.helper.custom_dl import ACTIVE_STREAMS, RECENT_STREAMS, ByteStreame
 from Backend.helper.encrypt import decode_string
 from Backend.helper.exceptions import FileNotFound
 from Backend.helper.global_db_service import remove_global_file_reference
-from Backend.helper.range_utils import chunk_window
+from Backend.helper.range_utils import chunk_window, stream_read_ahead
 from Backend.helper.virtual_dl import resolve_virtual_parts, virtual_stream_generator
 from Backend.logger import LOGGER
 from Backend.pyrofork.bot import (
@@ -398,6 +398,17 @@ async def virtual_media_streamer(request: Request, parts_payload: list, token: s
 
 
 _userbot_streamer: ByteStreamer = None
+_GLOBAL_STREAM_MAX_PARALLELISM = 4
+_GLOBAL_STREAM_MAX_PREFETCH = 8
+
+
+def get_global_stream_tuning(part_count: int) -> tuple[int, int]:
+    """Bound Userbot read-ahead while avoiding one-request-at-a-time playback."""
+    return stream_read_ahead(
+        part_count,
+        max_parallelism=_GLOBAL_STREAM_MAX_PARALLELISM,
+        max_prefetch=_GLOBAL_STREAM_MAX_PREFETCH,
+    )
 
 
 #----- Lazily build and cache the ByteStreamer for the Userbot (None if unconfigured)
@@ -475,6 +486,12 @@ async def global_media_streamer(request: Request, chat_id: int, msg_id: int, tok
     if request.method == "HEAD":
         return PlainResponse(status_code=status, headers=headers)
 
+    parallelism, prefetch = get_global_stream_tuning(part_count)
+    LOGGER.info(
+        "[USERBOT] Streaming with %s parallel reads and %s-chunk read-ahead.",
+        parallelism,
+        prefetch,
+    )
     body_gen = await streamer.prefetch_stream(
         file_id=file_id,
         client_index=USERBOT_CLIENT_INDEX,
@@ -483,10 +500,10 @@ async def global_media_streamer(request: Request, chat_id: int, msg_id: int, tok
         last_part_cut=last_part_cut,
         part_count=part_count,
         chunk_size=chunk_size,
-        prefetch=1,
+        prefetch=prefetch,
         stream_id=stream_id,
         meta=meta,
-        parallelism=1,
+        parallelism=parallelism,
         request=request,
         chat_id=chat_id,
         message_id=msg_id,

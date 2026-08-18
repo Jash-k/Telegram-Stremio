@@ -30,6 +30,51 @@ def episode_bounds(value) -> tuple[Optional[int], Optional[int]]:
     return number, number
 
 
+def normalize_global_file_fields(file_doc: dict, indexed_at=None) -> dict:
+    """Normalize legacy scalar/list file coordinates for bulk migration."""
+    start_low, start_high = episode_bounds(file_doc.get("episode_start"))
+    end_low, end_high = episode_bounds(file_doc.get("episode_end"))
+    bounds = [
+        value
+        for value in (start_low, start_high, end_low, end_high)
+        if value is not None
+    ]
+    normalized = {
+        "chat_id": first_int(file_doc.get("chat_id")),
+        "message_id": first_int(file_doc.get("message_id")),
+        "season": first_int(file_doc.get("season")),
+        "episode_start": min(bounds) if bounds else None,
+        "episode_end": max(bounds) if bounds else None,
+    }
+    normalized["indexed_at"] = file_doc.get("indexed_at") or indexed_at
+    return normalized
+
+
+def languages_from_filename(filename: str) -> list[str]:
+    """Extract the language labels used by GlobalDB catalog filters."""
+    import re
+
+    language_map = {
+        "tam": "Tamil",
+        "tamil": "Tamil",
+        "tel": "Telugu",
+        "telugu": "Telugu",
+        "hin": "Hindi",
+        "hindi": "Hindi",
+        "mal": "Malayalam",
+        "malayalam": "Malayalam",
+        "kan": "Kannada",
+        "kannada": "Kannada",
+        "eng": "English",
+        "english": "English",
+        "multi": "Multi",
+    }
+    value = str(filename or "").lower()
+    return sorted(
+        {label for token, label in language_map.items() if re.search(rf"\b{token}\b", value)}
+    )
+
+
 def build_global_file_query(
     meta_id: str,
     season: Optional[int] = None,

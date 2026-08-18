@@ -36,6 +36,12 @@ async def start_services():
         )
         if not global_db_result["ok"]:
             LOGGER.error("GlobalDB startup configuration failed: %s", global_db_result["message"])
+        elif global_db_result.get("enabled"):
+            from Backend.helper.global_migration import (
+                schedule_interrupted_migration_resume,
+            )
+
+            schedule_interrupted_migration_resume(db)
         app.add_middleware(SessionMiddleware, secret_key=SettingsManager.current().session_secret or secrets.token_hex(32))
         await asyncio.sleep(0.5)
 

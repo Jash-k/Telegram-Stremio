@@ -338,6 +338,12 @@ class SettingsManager:
                     raise ValueError(
                         "Stop the GlobalDB indexer before changing its database URI."
                     )
+                from Backend.helper.global_migration import global_migration_status
+
+                if (await global_migration_status(db)).get("running"):
+                    raise ValueError(
+                        "Stop the GlobalDB migration before changing its database URI."
+                    )
             result = await db.configure_global_database(new_global_uri)
             if not result.get("ok"):
                 raise ValueError(result.get("message") or "GlobalDB connection failed")
