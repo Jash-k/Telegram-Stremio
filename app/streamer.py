@@ -141,6 +141,8 @@ class Streamer:
                 return True
             return False
 
+        sem = asyncio.Semaphore(max(1, parallelism))
+
         async def fetch(i: int):
             off = offset + i * chunk
             async with sem:
