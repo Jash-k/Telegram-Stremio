@@ -4,6 +4,7 @@ import secrets
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -43,6 +44,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Global Stremio", version=__version__, lifespan=lifespan)
+
+# CORS is REQUIRED for Stremio web installs: web.stremio.com fetches the
+# manifest (and later catalog/meta/stream JSON) from the browser, so the
+# responses must allow cross-origin reads or install fails with "failed to fetch".
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["Content-Length", "Content-Range", "Accept-Ranges"],
+)
 
 # Session cookie auth (mirrors the original project's panel auth).
 app.add_middleware(
