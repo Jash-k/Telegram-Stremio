@@ -22,6 +22,10 @@ class FileNotFoundError_(Exception):
     pass
 
 
+class ClientNotConnected(Exception):
+    pass
+
+
 class Streamer:
     def __init__(self, client: Client):
         self.client = client
@@ -32,6 +36,9 @@ class Streamer:
         self._cache.pop((int(chat_id), int(message_id)), None)
 
     async def file_properties(self, chat_id: int, message_id: int) -> FileId:
+        if self.client is None or not self.client.is_connected:
+            raise ClientNotConnected("userbot client is not connected")
+
         key = (int(chat_id), int(message_id))
         if key in self._cache:
             return self._cache[key]

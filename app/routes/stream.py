@@ -3,24 +3,28 @@ import mimetypes
 from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app import config
+from app.logger import LOGGER
 from app.security import require_token
-from app.streamer import FileNotFoundError_, Streamer
+from app.streamer import ClientNotConnected, FileNotFoundError_, Streamer
 from app.token import decode_payload
 
 router = APIRouter(tags=["stream"])
 
 _streamer: Streamer = None
+_streamer_client = None
 
 
 def get_streamer() -> Streamer:
-    global _streamer
-    if _streamer is None:
-        from app.client import client
+    """Return a Streamer bound to the *current* client (rebuild on change)."""
+    global _streamer, _streamer_client
+    from app.client import client
 
+    if _streamer is None or _streamer_client is not client:
         _streamer = Streamer(client)
+        _streamer_client = client
     return _streamer
 
 
@@ -68,11 +72,28 @@ async def download(token: str, sid: str, name: str, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid stream id")
 
+    # Make sure the userbot is connected before touching Telegram. This also
+    # recovers a client that disconnected after startup.
+    from app.client import ensure_started
+
+    client = await ensure_started()
+    if client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Streaming unavailable: Telegram userbot is not connected "
+                   "(check SESSION_STRING — it may be in use elsewhere).",
+        )
+
     streamer = get_streamer()
     try:
         fid = await streamer.file_properties(chat_id, msg_id)
+    except ClientNotConnected:
+        raise HTTPException(status_code=503, detail="Streaming unavailable: userbot not connected.")
     except FileNotFoundError_:
         raise HTTPException(status_code=404, detail="File not found")
+    except Exception as exc:
+        LOGGER.error("Stream lookup failed for chat=%s msg=%s: %s", chat_id, msg_id, exc)
+        raise HTTPException(status_code=502, detail="Telegram file lookup failed")
 
     file_size = fid.file_size
     if file_size <= 0:
