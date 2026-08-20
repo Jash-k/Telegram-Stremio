@@ -28,7 +28,6 @@ from .logger import LOGGER
 
 CHUNK_SIZE = 1024 * 1024  # 1 MiB
 STALL_TIMEOUT = 90.0      # abort if no chunk for this long
-_DISCONNECT_CHECK_EVERY = 8
 
 
 class FileNotFoundError_(Exception):
@@ -336,13 +335,14 @@ class Streamer:
             part_idx = 1
             try:
                 while True:
-                    if part_idx % _DISCONNECT_CHECK_EVERY == 0:
-                        try:
-                            if request and await request.is_disconnected():
-                                stop_event.set()
-                                break
-                        except Exception:
-                            pass
+                    # Detect a closed client connection every chunk (players
+                    # buffer ahead and disconnect well before the file ends).
+                    try:
+                        if request is not None and await request.is_disconnected():
+                            stop_event.set()
+                            break
+                    except Exception:
+                        pass
 
                     try:
                         item = await asyncio.wait_for(queue.get(), timeout=STALL_TIMEOUT)

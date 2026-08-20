@@ -102,6 +102,7 @@ async def download(token: str, sid: str, name: str, request: Request):
     range_header = request.headers.get("range", "")
     start, end = parse_range(range_header, file_size)
     length = end - start + 1
+    is_range = bool(range_header)
 
     file_name = fid.file_name or unquote(name) or "video.mkv"
     mime = fid.mime_type or mimetypes.guess_type(file_name)[0] or "video/mp4"
@@ -110,18 +111,30 @@ async def download(token: str, sid: str, name: str, request: Request):
         "Content-Type": mime,
         "Content-Disposition": _content_disposition(file_name),
         "Accept-Ranges": "bytes",
-        "Content-Length": str(length),
         "Cache-Control": "public, max-age=3600",
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
     }
     status = 200
-    if range_header:
+    if is_range:
+        # Bounded range: a fixed Content-Length is safe and enables seeking.
         headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+        headers["Content-Length"] = str(length)
         status = 206
 
     if request.method == "HEAD":
-        return Response(status_code=status, headers=headers)
+        # HEAD must report the full resource size so the player can seek.
+        headers["Content-Length"] = str(file_size)
+        headers["Accept-Ranges"] = "bytes"
+        return Response(status_code=200, headers=headers)
+
+    if not is_range:
+        # Full-file stream: deliberately OMIT Content-Length so uvicorn uses
+        # chunked transfer encoding. Players read ahead and disconnect before
+        # consuming a whole multi-GB file; a declared Content-Length would make
+        # that normal disconnect crash with
+        # "Response content shorter than Content-Length".
+        headers.pop("Content-Length", None)
 
     gen = await streamer.stream(fid, start, end, chat_id=chat_id, message_id=msg_id, request=request)
     return StreamingResponse(gen, status_code=status, headers=headers, media_type=mime)
