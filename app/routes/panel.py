@@ -1,4 +1,6 @@
 """Web pages: login, logout, theme, and the GlobalDB management panel."""
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -26,11 +28,24 @@ def _base_context(request: Request) -> dict:
     }
 
 
+def _stremio_urls() -> dict:
+    base = config.BASE_URL or ""
+    token = config.API_TOKEN or ""
+    if base and token:
+        manifest = f"{base}/stremio/{token}/manifest.json"
+        return {
+            "manifest_url": manifest,
+            "web_install_url": f"https://web.stremio.com/#/?addon_manifest={quote(manifest, safe='')}",
+        }
+    return {"manifest_url": "", "web_install_url": ""}
+
+
 @router.get("/admin/global", response_class=HTMLResponse)
 async def global_manage(request: Request, _: bool = Depends(require_auth)):
     ctx = _base_context(request)
     ctx["current_user"] = get_current_user(request)
     ctx["has_global_db"] = bool(config.MONGO_URI)
+    ctx.update(_stremio_urls())
     return templates.TemplateResponse(request, "global_manage.html", ctx)
 
 

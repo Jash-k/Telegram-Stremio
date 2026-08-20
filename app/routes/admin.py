@@ -10,7 +10,16 @@ from fastapi.responses import JSONResponse
 
 from app import db
 from app.cleanup import is_running as cleanup_running, run_cleanup_all
-from app.indexer import remove_file_reference, request_stop, schedule_index, status
+from app.indexer import (
+    add_channel,
+    configured_channels,
+    get_channel_config,
+    remove_channel,
+    remove_file_reference,
+    request_stop,
+    schedule_index,
+    status,
+)
 from app.logger import LOGGER
 from app.metadata import format_tmdb_image, tmdb_details, tmdb_find_by_imdb, year_number
 from app.migration import migration_status, request_stop as migration_stop, start_migration
@@ -354,7 +363,8 @@ async def channels(_: bool = Depends(require_auth)):
             pass
 
     result = []
-    for cid in sorted(set(idx) | set(unidx) | scanned, key=abs):
+    configured = set(await get_channel_config())
+    for cid in sorted(set(idx) | set(unidx) | scanned | configured, key=abs):
         is_scanned = cid in scanned or cid in idx or cid in unidx
         i = idx.get(cid, 0)
         u = unidx.get(cid, 0)
@@ -364,9 +374,67 @@ async def channels(_: bool = Depends(require_auth)):
             "unindexed": u if is_scanned else "--",
             "total": (i + u) if is_scanned else "--",
             "is_scanned": is_scanned,
+            "configured": cid in configured,
             "name": await _chat_title(cid),
         })
     return {"channels": result}
+
+
+async def _resolve_chat(input_id: str) -> int | None:
+    """Resolve a channel identifier (id, -100 id, or @username) to a chat id."""
+    input_id = str(input_id or "").strip().lstrip("@")
+    if not input_id:
+        return None
+    # Numeric id (positive -> -100 prefix; negative -> kept as-is).
+    try:
+        n = int(input_id)
+        return n if n < 0 else int(f"-100{n}")
+    except ValueError:
+        pass
+    # Username
+    try:
+        from app.client import client
+
+        if client is not None and client.is_connected:
+            chat = await client.get_chat(input_id)
+            return int(chat.id)
+    except Exception:
+        pass
+    return None
+
+
+@router.get("/channels/config")
+async def channel_config(_: bool = Depends(require_auth)):
+    configured = await get_channel_config()
+    return {"channels": [{"chat_id": c, "name": await _chat_title(c)} for c in configured]}
+
+
+@router.post("/channels/add")
+async def channel_add(payload: dict, _: bool = Depends(require_auth)):
+    chat_id = await _resolve_chat(payload.get("chat_id", ""))
+    if not chat_id:
+        return {"status": "error", "message": "Could not resolve channel (use id, -100 id, or @username)."}
+    await add_channel(chat_id)
+    return {"status": "success", "chat_id": chat_id, "name": await _chat_title(chat_id)}
+
+
+@router.post("/channels/remove")
+async def channel_remove(payload: dict, _: bool = Depends(require_auth)):
+    chat_id = await _resolve_chat(payload.get("chat_id", ""))
+    if not chat_id:
+        return {"status": "error", "message": "Could not resolve channel id."}
+    await remove_channel(chat_id)
+    purge = bool(payload.get("purge", False))
+    if purge:
+        # Also delete this channel's indexed files + orphaned meta.
+        file_keys = [f["_id"] async for f in db.col("files").find({"chat_id": {"$in": [chat_id, str(chat_id)]}}, {"_id": 1, "meta_id": 1})]
+        meta_ids = {f["meta_id"] for f in file_keys if f.get("meta_id")}
+        await db.col("files").delete_many({"chat_id": {"$in": [chat_id, str(chat_id)]}})
+        await db.col("unindexed").delete_many({"chat_id": {"$in": [chat_id, str(chat_id)]}})
+        for mid in meta_ids:
+            if not await db.col("files").find_one({"meta_id": mid}, {"_id": 1}):
+                await db.col("meta").delete_one({"_id": mid})
+    return {"status": "success"}
 
 
 @router.get("/channels/{chat_id}/files")

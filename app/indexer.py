@@ -77,10 +77,20 @@ def resolve_channel_ids(raw_ids) -> list[int]:
     return resolved
 
 
-async def _configured_channels() -> list[int]:
+_CHANNELS_DOC = "channels_config"
+
+
+async def configured_channels() -> list[int]:
+    """Channels the indexer should track.
+
+    Resolution order: env `CHANNELS` → persisted config (editable in the panel)
+    → auto-derived from existing sync state.
+    """
     if config.CHANNELS:
         return resolve_channel_ids(config.CHANNELS)
-    # Fall back to channels already present in the GlobalDB state.
+    doc = await db.col("state").find_one({"_id": _CHANNELS_DOC})
+    if doc and doc.get("channels"):
+        return resolve_channel_ids(doc["channels"])
     ids = set()
     async for s in db.col("state").find({"_id": {"$regex": "^sync_"}}):
         try:
@@ -88,6 +98,50 @@ async def _configured_channels() -> list[int]:
         except (ValueError, IndexError):
             continue
     return sorted(ids, key=abs)
+
+
+async def get_channel_config() -> list[int]:
+    """Raw configured list (panel management view), or auto-derived."""
+    doc = await db.col("state").find_one({"_id": _CHANNELS_DOC})
+    if doc and doc.get("channels"):
+        return resolve_channel_ids(doc["channels"])
+    return await configured_channels()
+
+
+async def add_channel(chat_id: int) -> bool:
+    """Persist a channel id into the config list."""
+    chat_id = int(chat_id)
+    doc = await db.col("state").find_one({"_id": _CHANNELS_DOC}) or {}
+    current = list(doc.get("channels", []))
+    # normalize alongside existing entries
+    all_ids = set(resolve_channel_ids([*current, chat_id]))
+    await db.col("state").update_one(
+        {"_id": _CHANNELS_DOC},
+        {"$set": {"channels": sorted(all_ids, key=abs)}},
+        upsert=True,
+    )
+    return True
+
+
+async def remove_channel(chat_id: int) -> bool:
+    """Remove a channel id from the config list (and its sync state)."""
+    chat_id = int(chat_id)
+    doc = await db.col("state").find_one({"_id": _CHANNELS_DOC}) or {}
+    current = set(resolve_channel_ids(doc.get("channels", [])))
+    current.discard(chat_id)
+    if doc.get("channels"):
+        await db.col("state").update_one(
+            {"_id": _CHANNELS_DOC},
+            {"$set": {"channels": sorted(current, key=abs)}},
+        )
+    # Clear its sync checkpoints so a re-add starts fresh.
+    await db.col("state").delete_many({"_id": {"$regex": f"^sync_{chat_id}_"}})
+    return True
+
+
+# Backwards-compatible alias used elsewhere.
+async def _configured_channels() -> list[int]:
+    return await configured_channels()
 
 
 # ---------------------------------------------------------------------------

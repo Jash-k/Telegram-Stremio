@@ -42,6 +42,22 @@
     </div>
 </div>
 
+{% if manifest_url %}
+<div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:1.5rem; background: var(--card); padding: 1rem 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
+    <i class="fa-solid fa-bolt" style="color:var(--primary); font-size:1.4rem;"></i>
+    <div style="flex:1; min-width:220px;">
+        <div style="font-weight:700; font-size:0.95rem;">Connect to Stremio</div>
+        <div style="color:var(--text-sec); font-size:0.8rem; word-break:break-all;" id="manifest-url-label">{{ manifest_url }}</div>
+    </div>
+    <button class="btn btn-primary" style="padding:0.5rem 1rem; font-size:0.9rem;" onclick="copyManifestUrl()">
+        <i class="fa-solid fa-copy"></i> <span id="copy-btn-label">Copy URL</span>
+    </button>
+    <a class="btn btn-ghost" style="padding:0.5rem 1rem; font-size:0.9rem;" href="{{ web_install_url }}" target="_blank" rel="noopener">
+        <i class="fa-solid fa-external-link"></i> Install
+    </a>
+</div>
+{% endif %}
+
 <div style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:1.5rem; background: var(--card); padding: 1rem; border-radius: 12px; border: 1px solid var(--border); align-items:center;">
     <strong style="color:var(--text-sec); font-size:0.9rem; margin-right:10px;">MAINTENANCE:</strong>
     <div style="display:flex; flex-direction:column; align-items:center;">
@@ -136,9 +152,16 @@
 
 <!-- Channels View -->
 <div id="view-channels" style="display:none;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; flex-wrap:wrap; gap:10px;">
         <h3 style="font-size:1.1rem; font-weight:600;">Telegram Channels</h3>
-        <button onclick="loadChannels()" class="btn btn-ghost"><i class="fa-solid fa-rotate-right"></i> Refresh</button>
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <input type="text" id="add-channel-input" class="s-input" placeholder="Channel ID or @username" style="padding:0.4rem 0.8rem; font-size:0.9rem; min-width:220px;" onkeydown="if(event.key==='Enter')addChannel()">
+            <button class="btn btn-primary" onclick="addChannel()" style="padding:0.4rem 0.9rem; font-size:0.9rem;"><i class="fa-solid fa-plus"></i> Add Channel</button>
+            <button onclick="loadChannels()" class="btn btn-ghost" style="padding:0.4rem 0.9rem; font-size:0.9rem;"><i class="fa-solid fa-rotate-right"></i> Refresh</button>
+        </div>
+    </div>
+    <div style="font-size:0.8rem; color:var(--text-sec); margin-bottom:0.75rem;">
+        <i class="fa-solid fa-circle-info"></i> Add a channel by its ID (e.g. <code>-1001234567890</code>) or <code>@username</code>, then press <strong>Sync</strong> to index it.
     </div>
     <div class="table-wrap">
         <table>
@@ -535,13 +558,17 @@ async function loadChannels() {
                 let idxHTML = c.is_scanned ? `<a href="#" onclick="openChannelFiles('${c.chat_id}', '${escapeHtml(c.name)}', 'indexed'); return false;" style="color:var(--primary); font-weight:bold; text-decoration:underline;">${c.indexed}</a>` : '--';
                 let unidxHTML = c.is_scanned ? `<a href="#" onclick="openChannelFiles('${c.chat_id}', '${escapeHtml(c.name)}', 'unindexed'); return false;" style="color:#ef4444; font-weight:bold; text-decoration:underline;">${c.unindexed}</a>` : '--';
                 let totalHTML = c.is_scanned ? c.total : '--';
+                let cfgBadge = c.configured ? `<span class="badge" style="background:var(--primary); color:var(--bg); margin-left:6px;">tracked</span>` : '';
                 
                 list.innerHTML += `<tr>
-                    <td><strong>${escapeHtml(c.name)}</strong> <span style="font-size:0.8rem; color:var(--text-sec);"><br>${c.chat_id}</span></td>
+                    <td><strong>${escapeHtml(c.name)}</strong> <span style="font-size:0.8rem; color:var(--text-sec);"><br>${c.chat_id}</span>${cfgBadge}</td>
                     <td>${idxHTML}</td>
                     <td>${unidxHTML}</td>
                     <td>${totalHTML}</td>
-                    <td><button class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="syncChannel('${c.chat_id}')"><i class="fa-solid fa-rotate"></i> Sync</button></td>
+                    <td style="white-space:nowrap;">
+                        <button class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="syncChannel('${c.chat_id}')"><i class="fa-solid fa-rotate"></i> Sync</button>
+                        <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="removeChannel('${c.chat_id}')"><i class="fa-solid fa-trash"></i> Remove</button>
+                    </td>
                 </tr>`;
             });
         }
@@ -557,6 +584,73 @@ async function syncChannel(chatId, historic) {
         body: JSON.stringify({chat_id: chatId, force_historic: historic})
     });
     checkIndexer();
+}
+
+async function addChannel() {
+    const input = document.getElementById('add-channel-input');
+    const value = input.value.trim();
+    if (!value) return alert("Enter a channel ID or @username first.");
+    input.disabled = true;
+    try {
+        const res = await fetch('/api/admin/global/channels/add', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({chat_id: value})
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            input.value = '';
+            alert(`Channel added: ${data.name} (${data.chat_id}). Press "Sync" to index it now.`);
+            await loadChannels();
+        } else {
+            alert(`Error: ${data.message}`);
+        }
+    } catch (e) { alert(`Error: ${e}`); }
+    input.disabled = false;
+}
+
+async function removeChannel(chatId) {
+    const purge = confirm("Also delete this channel's indexed files & metadata? (OK = purge data, Cancel = just stop tracking)");
+    if (!confirm(`Remove channel ${chatId} from tracking?`)) return;
+    const res = await fetch('/api/admin/global/channels/remove', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({chat_id: chatId, purge: purge})
+    });
+    const data = await res.json();
+    if (data.status === 'success') {
+        alert(purge ? 'Channel removed and data purged.' : 'Channel removed from tracking.');
+        await loadChannels();
+        loadData();
+    } else {
+        alert(`Error: ${data.message || 'failed'}`);
+    }
+}
+
+function copyManifestUrl() {
+    const url = document.getElementById('manifest-url-label').textContent;
+    if (!url) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(() => {
+            document.getElementById('copy-btn-label').textContent = 'Copied!';
+            setTimeout(() => document.getElementById('copy-btn-label').textContent = 'Copy URL', 2000);
+        }).catch(() => fallbackCopy(url));
+    } else {
+        fallbackCopy(url);
+    }
+}
+
+function fallbackCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); document.getElementById('copy-btn-label').textContent = 'Copied!'; }
+    catch(e) {}
+    document.body.removeChild(ta);
+    setTimeout(() => document.getElementById('copy-btn-label').textContent = 'Copy URL', 2000);
 }
 
 function openChannelFiles(chatId, chatName, filter) {

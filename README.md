@@ -128,11 +128,12 @@ Open `https://YOUR-URL/` in a browser and **log in** with `ADMIN_USERNAME` /
 `ADMIN_PASSWORD`. This is the **exact same GlobalDB panel** as the original
 project (`global_manage.html`), with all features working identically:
 
+- **Connect to Stremio** — shows your addon manifest URL with a one-click **Copy URL** button + an **Install** link (opens Stremio web)
 - **Stats** — indexed files + catalogs count
 - **Sync All Channels / Stop** — indexer control with live status
 - **Maintenance** — Cleanup DB, Migrate Metadata, Wipe Database
 - **Catalogs** — per-catalog counts → drill into titles → drill into files
-- **Channels** — per-channel indexed/unindexed counts → drill into files, per-channel sync
+- **Channels** — **add** (by ID or `@username`) and **remove** (with optional data purge) channels, per-channel sync, drill into files
 - **Unindexed Queue** — search, single/batch TMDb mapping (incl. video-song), delete, purge-all
 - **Theme picker** — the full theme set, in the navbar dropdown
 
@@ -154,6 +155,8 @@ session cookie **or** the `X-Admin-Key` header:
 | `POST /wipe` | clear everything (keeps schema) |
 | `GET /unindexed` · `DELETE /unindexed` · `DELETE /unindexed/{id}` | failed queue |
 | `GET /channels` · `GET /channels/{id}/files` | channel browse |
+| `GET /channels/config` | configured channel list |
+| `POST /channels/add` · `POST /channels/remove` | add/remove channels (id or @username) |
 | `GET /files/catalog/{id}` · `GET /meta/{id}/files` | catalog/meta drilldown |
 | `POST /files/batch_map` · `POST /files/{id}/map` | TMDb mapping |
 | `DELETE /meta/{id}` · `/catalogs/{id}` · `/files/{id}` | deletes |
