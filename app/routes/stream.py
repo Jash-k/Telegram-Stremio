@@ -123,5 +123,5 @@ async def download(token: str, sid: str, name: str, request: Request):
     if request.method == "HEAD":
         return Response(status_code=status, headers=headers)
 
-    gen = streamer.stream(fid, start, end, chat_id=chat_id, message_id=msg_id)
+    gen = await streamer.stream(fid, start, end, chat_id=chat_id, message_id=msg_id, request=request)
     return StreamingResponse(gen, status_code=status, headers=headers, media_type=mime)
