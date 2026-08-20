@@ -105,7 +105,7 @@ async def manifest(token: str):
         "types": ["movie", "series"],
         "resources": ["catalog", "meta", "stream"],
         "catalogs": catalogs,
-        "idPrefixes": ["tt", "tmdb", "tmdb:"],
+        "idPrefixes": ["tt", "tg", "tmdb", "tmdb:", "song:"],
         "behaviorHints": {"configurable": True, "configurationRequired": False},
     }
 
@@ -269,11 +269,20 @@ async def stream(token: str, media_type: str, id: str):
     id = unquote(id)
 
     try:
-        if id.startswith("tmdb:"):
+        if id.startswith("song:tmdb:"):
+            parts = id.split(":")
+            imdb_id = f"song:tmdb:{parts[2]}"
+            season = int(parts[3]) if len(parts) > 3 else None
+            episode = int(parts[4]) if len(parts) > 4 else None
+        elif id.startswith("tmdb:"):
             parts = id.split(":")
             imdb_id = f"tmdb:{parts[1]}"
             season = int(parts[2]) if len(parts) > 2 else None
             episode = int(parts[3]) if len(parts) > 3 else None
+        elif id.startswith("song:"):
+            # song:tt1234567 — full id is the meta key, no season/episode.
+            imdb_id = id
+            season = episode = None
         else:
             parts = id.split(":")
             imdb_id = parts[0]

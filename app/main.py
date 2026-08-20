@@ -20,10 +20,15 @@ async def lifespan(app: FastAPI):
     if config.SESSION_STRING:
         from app import client as client_mod
 
-        await client_mod.start()
-        from app.live import install
+        try:
+            await client_mod.start()
+            from app.live import install
 
-        install(client_mod.client)
+            install(client_mod.client)
+        except Exception as exc:
+            # A session conflict (e.g. AUTH_KEY_DUPLICATED) must not take the
+            # whole app down — keep serving catalogs/panel without the userbot.
+            LOGGER.error("Userbot failed to start (%s). Indexing/streaming disabled, but the app stays up.", exc)
     else:
         LOGGER.warning("SESSION_STRING not set — indexing/streaming disabled")
 
