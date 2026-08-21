@@ -75,9 +75,56 @@
 </div>
 
 <div style="display:flex; gap:10px; margin-bottom:1.5rem; overflow-x:auto;">
-    <button id="tab-dash" class="btn btn-primary" style="white-space:nowrap;" onclick="switchView('dashboard')"><i class="fa-solid fa-layer-group"></i> Catalogs</button>
+    <button id="tab-health" class="btn btn-primary" style="white-space:nowrap;" onclick="switchView('health')"><i class="fa-solid fa-heart-pulse"></i> Health</button>
+    <button id="tab-dash" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('dashboard')"><i class="fa-solid fa-layer-group"></i> Catalogs</button>
     <button id="tab-channels" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('channels')"><i class="fa-solid fa-server"></i> Channels</button>
     <button id="tab-unidx" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('unindexed')"><i class="fa-solid fa-triangle-exclamation"></i> Unindexed Queue <span id="unindexed-badge" class="badge" style="display:none; background:#ef4444; color:white; margin-left:5px;">0</span></button>
+</div>
+
+<!-- Health Dashboard View -->
+<div id="view-health" style="display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+        <h3 style="font-size:1.1rem; font-weight:600;">Service Health</h3>
+        <button onclick="loadHealth()" class="btn btn-ghost"><i class="fa-solid fa-rotate-right"></i> Refresh</button>
+    </div>
+
+    <div class="global-stats" id="health-overview"></div>
+
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:1rem;">
+        <div class="table-wrap" style="margin-bottom:0;">
+            <table>
+                <thead><tr><th colspan="2">Telegram Session</th></tr></thead>
+                <tbody id="health-session"></tbody>
+            </table>
+        </div>
+        <div class="table-wrap" style="margin-bottom:0;">
+            <table>
+                <thead><tr><th colspan="2">Instance</th></tr></thead>
+                <tbody id="health-instance"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="table-wrap" style="margin-top:1rem;">
+        <table>
+            <thead><tr><th>Error Counters</th><th>Value</th></tr></thead>
+            <tbody id="health-counters"></tbody>
+        </table>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Active Streams</th><th>Title</th><th>Speed</th><th>Data</th><th>Duration</th></tr></thead>
+            <tbody id="health-active"><tr><td colspan="5" style="text-align:center;">Loading...</td></tr></tbody>
+        </table>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Recent Streams</th><th>Title</th><th>Status</th><th>Avg Mbps</th><th>Duration</th></tr></thead>
+            <tbody id="health-recent"><tr><td colspan="5" style="text-align:center;">—</td></tr></tbody>
+        </table>
+    </div>
 </div>
 
 <!-- Catalogs View -->
@@ -326,10 +373,12 @@ function switchView(viewName) {
     document.getElementById('view-unindexed').style.display = 'none';
     document.getElementById('view-catalog').style.display = 'none';
     document.getElementById('view-meta-files').style.display = 'none';
+    document.getElementById('view-health').style.display = 'none';
     
     document.getElementById('tab-dash').classList.replace('btn-primary', 'btn-ghost');
     document.getElementById('tab-channels').classList.replace('btn-primary', 'btn-ghost');
     document.getElementById('tab-unidx').classList.replace('btn-primary', 'btn-ghost');
+    document.getElementById('tab-health').classList.replace('btn-primary', 'btn-ghost');
     
     if (viewName === 'dashboard') {
         document.getElementById(`view-dashboard`).style.display = 'block';
@@ -347,6 +396,11 @@ function switchView(viewName) {
         unidxPage = 1;
         loadUnindexedPage();
         currentActiveCallback = loadUnindexedPage;
+    } else if (viewName === 'health') {
+        document.getElementById(`view-health`).style.display = 'block';
+        document.getElementById('tab-health').classList.replace('btn-ghost', 'btn-primary');
+        loadHealth();
+        currentActiveCallback = loadHealth;
     } else {
         document.getElementById(`view-${viewName}`).style.display = 'block';
     }
@@ -1008,7 +1062,114 @@ async function deleteUnindexed(id) {
     loadUnindexedBadge();
 }
 
-document.addEventListener("DOMContentLoaded", () => { switchView('dashboard'); checkIndexer(); checkTasks(); });
+/* --- Health Dashboard --- */
+function fmtBytes(n) {
+    if (n == null) return '—';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let i = 0, v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return v.toFixed(i ? 1 : 0) + ' ' + units[i];
+}
+
+async function loadHealth() {
+    try {
+        const res = await fetch('/api/admin/global/health');
+        const d = await res.json();
+
+        // Overview cards
+        const session = d.session || {};
+        const overall = d.overall || 'unknown';
+        const statusColor = overall === 'ok' ? '#22c55e' : (overall === 'degraded' ? '#d29922' : '#ef4444');
+        const sessOk = session.connected ? '<span style="color:#22c55e;">● Connected</span>' : '<span style="color:#ef4444;">● Offline</span>';
+        const idx = d.indexer || {};
+        const counts = d.catalog_counts || {};
+        const inst = d.instance || {};
+
+        document.getElementById('health-overview').innerHTML = `
+            <div class="stat-card" style="border:2px solid ${statusColor};">
+                <div class="stat-val" style="color:${statusColor};">${overall.toUpperCase()}</div>
+                <div class="stat-lbl">Overall</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val">${sessOk}</div>
+                <div class="stat-lbl">Session</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val">${idx.running ? 'RUNNING' : 'IDLE'}</div>
+                <div class="stat-lbl">Indexer</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val">${fmtBytes(counts.files)}</div>
+                <div class="stat-lbl">Files</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val">${counts.meta ?? '—'}</div>
+                <div class="stat-lbl">Titles</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val">${(d.telemetry?.active_streams || []).length}</div>
+                <div class="stat-lbl">Active Streams</div>
+            </div>`;
+
+        // Session table
+        const sessionRows = [
+            ['Connected', session.connected ? 'Yes' : 'No'],
+            ['Account', [session.first_name, session.username ? '@' + session.username : ''].filter(Boolean).join(' ') || '—'],
+            ['Datacenter', session.dc_id ?? '—'],
+            ['Last error', session.last_error ? session.last_error.split(':').slice(0,2).join(':') : 'None'],
+            ['Reconnect attempts', session.reconnect_attempts ?? 0],
+        ];
+        document.getElementById('health-session').innerHTML = sessionRows.map(([k, v]) =>
+            `<tr><td style="color:var(--text-sec);">${k}</td><td style="word-break:break-all;">${escapeHtml(String(v))}</td></tr>`).join('');
+
+        // Instance table
+        document.getElementById('health-instance').innerHTML = `
+            <tr><td style="color:var(--text-sec);">Hostname</td><td>${escapeHtml(inst.hostname || '—')}</td></tr>
+            <tr><td style="color:var(--text-sec);">PID</td><td>${inst.pid ?? '—'}</td></tr>
+            <tr><td style="color:var(--text-sec);">Cleanup</td><td>${d.cleanup_running ? 'Running' : 'Idle'}</td></tr>`;
+
+        // Error counters
+        const counters = d.telemetry?.counters || {};
+        const counterNames = {
+            stream_requests: 'Stream requests', stream_started: 'Streams started',
+            stream_finished: 'Streams finished', stream_errors: 'Stream errors',
+            lookup_failures: 'File lookup failures', auth_key_duplicated: 'AUTH_KEY_DUPLICATED',
+            flood_waits: 'FloodWaits',
+        };
+        document.getElementById('health-counters').innerHTML = Object.entries(counterNames).map(([k, label]) => {
+            const val = counters[k] ?? 0;
+            const color = (k.includes('fail') || k.includes('duplicated') || k.includes('errors') || k.includes('flood')) && val > 0 ? '#ef4444' : 'var(--text)';
+            return `<tr><td>${label}</td><td style="color:${color}; font-weight:600;">${val}</td></tr>`;
+        }).join('');
+
+        // Active streams
+        const active = d.telemetry?.active_streams || [];
+        document.getElementById('health-active').innerHTML = active.length === 0
+            ? '<tr><td colspan="5" style="text-align:center;">No active streams</td></tr>'
+            : active.map(s => `<tr>
+                <td style="color:#22c55e;">● ${s.status || 'active'}</td>
+                <td style="word-break:break-all;">${escapeHtml(s.title || '—')}</td>
+                <td>${s.instant_mbps ?? 0} Mbps</td>
+                <td>${fmtBytes(s.total_bytes)}</td>
+                <td>${s.duration ?? 0}s</td></tr>`).join('');
+
+        // Recent streams
+        const recent = d.telemetry?.recent_streams || [];
+        document.getElementById('health-recent').innerHTML = recent.length === 0
+            ? '<tr><td colspan="5" style="text-align:center;">No recent streams</td></tr>'
+            : recent.map(s => `<tr>
+                <td>${s.status || 'done'}</td>
+                <td style="word-break:break-all;">${escapeHtml(s.title || '—')}</td>
+                <td>${s.avg_mbps ?? 0}</td>
+                <td>${fmtBytes(s.total_bytes)}</td>
+                <td>${s.duration ?? 0}s</td></tr>`).join('');
+    } catch (e) {
+        console.error('loadHealth', e);
+        document.getElementById('health-overview').innerHTML = `<div class="stat-card"><div class="stat-val" style="color:#ef4444;">ERROR</div><div class="stat-lbl">${escapeHtml(String(e))}</div></div>`;
+    }
+}
+
+document.addEventListener("DOMContentLoaded", () => { switchView('health'); checkIndexer(); checkTasks(); });
 </script>
 {% endif %}
 {% endblock %}
