@@ -8,7 +8,11 @@ import PTN
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+import os
+import socket
+
 from app import db
+from app import telemetry
 from app.cleanup import is_running as cleanup_running, run_cleanup_all
 from app.indexer import (
     add_channel,
@@ -177,6 +181,9 @@ async def wipe(_: bool = Depends(require_auth)):
     await db.col("catalogs").delete_many({})
     await db.col("unindexed").delete_many({})
     await db.col("state").delete_many({"_id": {"$ne": "schema"}})
+    from app.cache import invalidate_all
+
+    invalidate_all()
     return {"status": "success"}
 
 
@@ -510,4 +517,48 @@ async def tasks_status(_: bool = Depends(require_auth)):
         "cleanup_running": cleanup_running(),
         "migrate_running": bool(migration.get("running")),
         "migration": migration,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Health / telemetry (one call to see everything)
+# ---------------------------------------------------------------------------
+
+@router.get("/health")
+async def health(_: bool = Depends(require_auth)):
+    """Aggregate session + stream + error + instance info."""
+    from app.client import session_status
+
+    session = session_status()
+
+    # DB counts (cheap-ish; the panel already calls these).
+    files = await db.col("files").count_documents({})
+    meta = await db.col("meta").count_documents({})
+    unindexed = await db.col("unindexed").count_documents({})
+
+    tele = telemetry.snapshot()
+
+    # Instance identity — makes "I have N pods" immediately obvious.
+    try:
+        instance = {
+            "hostname": socket.gethostname(),
+            "pid": os.getpid(),
+        }
+    except Exception:
+        instance = {"hostname": "?", "pid": os.getpid()}
+
+    overall = "ok"
+    if not session["connected"]:
+        overall = "degraded"
+    if session.get("last_error") and "AUTH_KEY_DUPLICATED" in str(session.get("last_error")):
+        overall = "critical"
+
+    return {
+        "overall": overall,
+        "session": session,
+        "indexer": status(),
+        "cleanup_running": cleanup_running(),
+        "catalog_counts": {"files": files, "meta": meta, "unindexed": unindexed},
+        "telemetry": tele,
+        "instance": instance,
     }
