@@ -42,7 +42,14 @@ async def clean_meta_files(meta_id: str) -> int:
 
     groups = defaultdict(list)
     for f in files:
-        key = (f.get("season"), f.get("episode_start"), f.get("episode_end"))
+        def make_hashable(val):
+            return tuple(val) if isinstance(val, list) else val
+
+        key = (
+            make_hashable(f.get("season")),
+            make_hashable(f.get("episode_start")),
+            make_hashable(f.get("episode_end")),
+        )
         groups[key].append(f)
 
     to_delete = []

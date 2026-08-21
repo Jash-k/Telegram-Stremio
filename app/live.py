@@ -40,7 +40,13 @@ async def _index_live(message) -> None:
     if not (getattr(message, "video", None) or getattr(message, "document", None)):
         await remove_file_reference(chat_id, message.id)
         return
-    await _process_message(chat_id, message)
+    meta_id = await _process_message(chat_id, message)
+    # Enforce the same "best-of-3 with Tamil preference" quality policy on every
+    # new/edit file, exactly like the original live indexer (live_global_indexer).
+    if meta_id:
+        from .cleanup import clean_meta_files
+
+        await clean_meta_files(meta_id)
     msg_filter = "VIDEO" if message.video else "DOCUMENT"
     await db.col("state").update_one(
         {"_id": f"sync_{chat_id}_{msg_filter}"},
