@@ -45,6 +45,17 @@ async def global_manage(request: Request, _: bool = Depends(require_auth)):
     ctx = _base_context(request)
     ctx["current_user"] = get_current_user(request)
     ctx["has_global_db"] = bool(config.MONGO_URI)
+    ctx["initial_view"] = "dashboard"
+    ctx.update(_stremio_urls())
+    return templates.TemplateResponse(request, "global_manage.html", ctx)
+
+
+@router.get("/admin/health", response_class=HTMLResponse)
+async def health_page(request: Request, _: bool = Depends(require_auth)):
+    ctx = _base_context(request)
+    ctx["current_user"] = get_current_user(request)
+    ctx["has_global_db"] = bool(config.MONGO_URI)
+    ctx["initial_view"] = "health"
     ctx.update(_stremio_urls())
     return templates.TemplateResponse(request, "global_manage.html", ctx)
 

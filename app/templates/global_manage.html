@@ -75,8 +75,7 @@
 </div>
 
 <div style="display:flex; gap:10px; margin-bottom:1.5rem; overflow-x:auto;">
-    <button id="tab-health" class="btn btn-primary" style="white-space:nowrap;" onclick="switchView('health')"><i class="fa-solid fa-heart-pulse"></i> Health</button>
-    <button id="tab-dash" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('dashboard')"><i class="fa-solid fa-layer-group"></i> Catalogs</button>
+    <button id="tab-dash" class="btn btn-primary" style="white-space:nowrap;" onclick="switchView('dashboard')"><i class="fa-solid fa-layer-group"></i> Catalogs</button>
     <button id="tab-channels" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('channels')"><i class="fa-solid fa-server"></i> Channels</button>
     <button id="tab-unidx" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('unindexed')"><i class="fa-solid fa-triangle-exclamation"></i> Unindexed Queue <span id="unindexed-badge" class="badge" style="display:none; background:#ef4444; color:white; margin-left:5px;">0</span></button>
 </div>
@@ -378,7 +377,6 @@ function switchView(viewName) {
     document.getElementById('tab-dash').classList.replace('btn-primary', 'btn-ghost');
     document.getElementById('tab-channels').classList.replace('btn-primary', 'btn-ghost');
     document.getElementById('tab-unidx').classList.replace('btn-primary', 'btn-ghost');
-    document.getElementById('tab-health').classList.replace('btn-primary', 'btn-ghost');
     
     if (viewName === 'dashboard') {
         document.getElementById(`view-dashboard`).style.display = 'block';
@@ -398,7 +396,6 @@ function switchView(viewName) {
         currentActiveCallback = loadUnindexedPage;
     } else if (viewName === 'health') {
         document.getElementById(`view-health`).style.display = 'block';
-        document.getElementById('tab-health').classList.replace('btn-ghost', 'btn-primary');
         loadHealth();
         currentActiveCallback = loadHealth;
     } else {
@@ -1074,6 +1071,19 @@ function fmtBytes(n) {
 async function loadHealth() {
     try {
         const res = await fetch('/api/admin/global/health');
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: res.statusText }));
+            document.getElementById('health-overview').innerHTML = `
+                <div class="stat-card" style="border:2px solid #ef4444;">
+                    <div class="stat-val" style="color:#ef4444;">HTTP ${res.status}</div>
+                    <div class="stat-lbl">Health endpoint failed</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-val" style="font-size:1rem; color:#ef4444;">${escapeHtml(err.detail || res.statusText)}</div>
+                    <div class="stat-lbl">Is the backend redeployed? Is Koyeb running 1 instance?</div>
+                </div>`;
+            return;
+        }
         const d = await res.json();
 
         // Overview cards
@@ -1169,7 +1179,7 @@ async function loadHealth() {
     }
 }
 
-document.addEventListener("DOMContentLoaded", () => { switchView('health'); checkIndexer(); checkTasks(); });
+document.addEventListener("DOMContentLoaded", () => { switchView('{{ initial_view|default("dashboard") }}'); checkIndexer(); checkTasks(); });
 </script>
 {% endif %}
 {% endblock %}
