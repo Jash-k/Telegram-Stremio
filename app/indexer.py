@@ -401,6 +401,10 @@ async def _process_message(chat_id: int, message) -> str | None:
         "size": size,
         "size_str": readable_size(size),
         "quality": parsed.get("resolution") or "HD",
+        # Pre-computed technical metadata (no PTN re-parse needed at stream time).
+        "codec": parsed.get("codec") or "",
+        "audio": parsed.get("audio") or "",
+        "resolution": parsed.get("resolution") or "",
         "chat_id": int(chat_id),
         "message_id": int(message.id),
         "season": first_int(combined["season"]) if combined else season,

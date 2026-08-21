@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app import config
+from app import telemetry
 from app.logger import LOGGER
 from app.security import require_token
 from app.streamer import ClientNotConnected, FileNotFoundError_, Streamer
@@ -92,6 +93,14 @@ async def download(token: str, sid: str, name: str, request: Request):
     except FileNotFoundError_:
         raise HTTPException(status_code=404, detail="File not found")
     except Exception as exc:
+        # Classify the error for the health dashboard.
+        err = str(exc)
+        if "AUTH_KEY_DUPLICATED" in err:
+            telemetry.bump("auth_key_duplicated")
+        elif "wait of" in err or "FLOOD" in err:
+            telemetry.bump("flood_waits")
+        else:
+            telemetry.bump("lookup_failures")
         LOGGER.error("Stream lookup failed for chat=%s msg=%s: %s", chat_id, msg_id, exc)
         raise HTTPException(status_code=502, detail="Telegram file lookup failed")
 

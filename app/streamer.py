@@ -16,6 +16,7 @@ Koyeb free tier).
 import asyncio
 import random
 import re
+import time
 from typing import AsyncIterator, Optional
 
 from pyrogram import Client, raw
@@ -24,6 +25,7 @@ from pyrogram.file_id import FileId
 from pyrogram.session import Auth, Session
 
 from . import config
+from . import telemetry
 from .logger import LOGGER
 
 CHUNK_SIZE = 1024 * 1024  # 1 MiB
@@ -208,6 +210,11 @@ class Streamer:
         stop_event = asyncio.Event()
         queue: asyncio.Queue = asyncio.Queue(maxsize=max(1, prefetch))
 
+        # Telemetry: register this stream for the health dashboard.
+        telemetry.bump("stream_requests")
+        stream_id = f"{id(self)}-{int(time.time() * 1000)}"
+        entry = telemetry.register_stream(stream_id, {"title": getattr(fid, "file_name", "") or ""})
+
         async def refresh() -> bool:
             if not chat_id or not message_id:
                 return False
@@ -367,9 +374,11 @@ class Streamer:
                         out = data
 
                     if out:
+                        telemetry.note_chunk(entry, len(out))
                         yield out
                     part_idx += 1
             finally:
+                telemetry.finish_stream(stream_id, "finished")
                 stop_event.set()
                 if not producer_task.done():
                     producer_task.cancel()

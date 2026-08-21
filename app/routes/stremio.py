@@ -8,6 +8,14 @@ from fastapi.responses import JSONResponse
 from app import config, db
 from app import parser as P
 from app import token as tok
+from app.cache import (
+    CATALOG_TTL,
+    MANIFEST_TTL,
+    META_TTL,
+    catalog_cache,
+    manifest_cache,
+    meta_cache,
+)
 
 router = APIRouter(prefix="/stremio", tags=["stremio"])
 
@@ -76,6 +84,10 @@ async def manifest(token: str):
 
     require_token(token)
 
+    cached = manifest_cache.get(token)
+    if cached is not None:
+        return cached
+
     catalogs = []
     counts = {}
     async for c in db.col("meta").aggregate([{"$group": {"_id": "$catalog", "count": {"$sum": 1}}}]):
@@ -97,7 +109,7 @@ async def manifest(token: str):
                 ],
             })
 
-    return {
+    manifest_data = {
         "id": f"global.stremio.{token[:8]}",
         "version": "1.0.0",
         "name": ADDON_NAME,
@@ -108,6 +120,8 @@ async def manifest(token: str):
         "idPrefixes": ["tt", "tg", "tmdb", "tmdb:", "song:"],
         "behaviorHints": {"configurable": True, "configurationRequired": False},
     }
+    manifest_cache.set(token, manifest_data, MANIFEST_TTL)
+    return manifest_data
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +137,11 @@ async def catalog(token: str, media_type: str, id: str, extra: str = None):
     require_token(token)
     if media_type not in ("movie", "series"):
         raise HTTPException(status_code=404, detail="Invalid type")
+
+    cache_key = (token, media_type, id, extra or "")
+    cached = catalog_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     genre_filter = search_query = language_filter = None
     sort_filter = "Latest Added"
@@ -182,7 +201,9 @@ async def catalog(token: str, media_type: str, id: str, extra: str = None):
         "description": item.get("description", ""),
         "genres": item.get("genres", []),
     } for item in items]
-    return {"metas": metas}
+    result = {"metas": metas}
+    catalog_cache.set(cache_key, result, CATALOG_TTL)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +217,11 @@ async def meta(token: str, media_type: str, id: str):
 
     require_token(token)
     id = unquote(id)
+
+    cache_key = (token, media_type, id)
+    cached = meta_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     g_meta = await P.resolve_global_meta(db.col("meta"), id)
     if not g_meta:
@@ -253,7 +279,9 @@ async def meta(token: str, media_type: str, id: str):
              "season": season, "episode": episode}
             for season, episode in sorted(episode_keys)
         ]
-    return {"meta": meta_obj}
+    result = {"meta": meta_obj}
+    meta_cache.set(cache_key, result, META_TTL)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -302,13 +330,22 @@ async def stream(token: str, media_type: str, id: str):
         filename = fdoc.get("filename", "")
         quality = fdoc.get("quality", "HD")
         size = fdoc.get("size_str", "")
+        # Pre-computed technical metadata (fast path; no PTN at request time).
+        codec = fdoc.get("codec") or ""
+        audio = fdoc.get("audio") or ""
         name = f"🌐 GLOBAL {quality}"
         combined = P.parse_combined_episodes(filename)
         if combined:
             label = "Full" if combined.get("start") is None else f"E{combined['start']:02d}-E{combined['end']:02d}"
             if label.lower() not in name.lower():
                 name = f"{name} {label}"
-        title = f"{_format_stream_title(filename, quality, size)}\n📡 Telegram"
+        title_parts = [f"📁 {filename}", f"💾 {size}"]
+        if codec:
+            title_parts.append(f"🎥 {codec}")
+        if audio:
+            title_parts.append(f"🔊 {audio}")
+        title_parts.append("📡 Telegram")
+        title = "\n".join(title_parts)
         streams.append({
             "name": name,
             "title": title,

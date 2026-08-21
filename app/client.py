@@ -2,8 +2,12 @@
 
 The session string grants access to the channels being indexed, so it powers
 both the indexer AND the stream proxy (no bot token needed).
+
+Also exposes session status for the health dashboard and supports the
+background watchdog (reconnect with backoff).
 """
 import asyncio
+import time
 
 from pyrogram import Client
 
@@ -12,6 +16,18 @@ from .logger import LOGGER
 
 client: Client = None
 _start_lock = asyncio.Lock()
+
+# Session state (read by the health dashboard + watchdog).
+_state = {
+    "connected": False,
+    "dc_id": None,
+    "username": None,
+    "first_name": None,
+    "last_error": None,
+    "last_error_at": None,
+    "last_connected_at": None,
+    "reconnect_attempts": 0,
+}
 
 
 def build() -> Client:
@@ -28,15 +44,45 @@ def build() -> Client:
     )
 
 
+def _mark_connected(c) -> None:
+    _state["connected"] = True
+    _state["last_connected_at"] = time.time()
+    _state["reconnect_attempts"] = 0
+    _state["last_error"] = None
+    _state["last_error_at"] = None
+    try:
+        _state["dc_id"] = getattr(c, "dc_id", None)
+    except Exception:
+        pass
+    try:
+        me = getattr(c, "me", None)
+        _state["username"] = getattr(me, "username", None)
+        _state["first_name"] = getattr(me, "first_name", None)
+    except Exception:
+        pass
+
+
+def _mark_disconnected(exc: Exception = None) -> None:
+    _state["connected"] = False
+    if exc is not None:
+        _state["last_error"] = f"{type(exc).__name__}: {exc}"
+        _state["last_error_at"] = time.time()
+
+
 async def start() -> Client:
     """Start the userbot (used at app startup). Raises on failure."""
     global client
     if client is None:
         client = build()
     if not client.is_connected:
-        await client.start()
-        me = await client.get_me()
-        LOGGER.info(f"Userbot online as {getattr(me, 'first_name', '?')} (@{getattr(me, 'username', '?')})")
+        try:
+            await client.start()
+        except Exception as exc:
+            _mark_disconnected(exc)
+            raise
+        await client.get_me()
+        _mark_connected(client)
+        LOGGER.info("Userbot online as %s (@%s)", _state["first_name"] or "?", _state["username"] or "?")
     return client
 
 
@@ -54,12 +100,15 @@ async def ensure_started() -> Client | None:
     async with _start_lock:
         if client.is_connected:
             return client
+        _state["reconnect_attempts"] += 1
         try:
             await client.start()
-            me = await client.get_me()
-            LOGGER.info(f"Userbot (re)connected as {getattr(me, 'first_name', '?')} (@{getattr(me, 'username', '?')})")
+            await client.get_me()
+            _mark_connected(client)
+            LOGGER.info("Userbot (re)connected as %s (@%s)", _state["first_name"] or "?", _state["username"] or "?")
             return client
         except Exception as exc:
+            _mark_disconnected(exc)
             LOGGER.error("Userbot could not connect: %s", exc)
             return None
 
@@ -68,8 +117,16 @@ def is_connected() -> bool:
     return client is not None and client.is_connected
 
 
+def session_status() -> dict:
+    """Snapshot of session state for the health dashboard."""
+    status = dict(_state)
+    status["connected"] = is_connected()
+    return status
+
+
 async def stop() -> None:
     global client
     if client is not None and client.is_connected:
         await client.stop()
     client = None
+    _state["connected"] = False

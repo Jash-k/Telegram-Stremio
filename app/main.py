@@ -13,6 +13,37 @@ from app.logger import LOGGER
 from app.routes import admin, panel, stream, stremio
 
 
+async def _session_watchdog():
+    """Reconnect the userbot with backoff if its connection drops.
+
+    Does NOT fight a real duplicate (two live processes) — but auto-heals a
+    transient drop or a crashed connection within a few minutes.
+    """
+    from app import client as client_mod
+
+    backoff = 10.0
+    while True:
+        await asyncio.sleep(60)
+        if not config.SESSION_STRING:
+            continue
+        if client_mod.is_connected():
+            backoff = 10.0
+            continue
+        try:
+            await client_mod.ensure_started()
+            if client_mod.is_connected():
+                # Live handlers may need re-installing after a fresh client.
+                from app.live import install
+
+                install(client_mod.client)
+                backoff = 10.0
+            else:
+                backoff = min(backoff * 2, 300.0)
+        except Exception:
+            backoff = min(backoff * 2, 300.0)
+        await asyncio.sleep(backoff)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.connect()
@@ -29,8 +60,8 @@ async def lifespan(app: FastAPI):
             # A session conflict (e.g. AUTH_KEY_DUPLICATED) must not take the
             # whole app down — keep serving catalogs/panel without the userbot.
             LOGGER.error("Userbot failed to start (%s). Indexing/streaming disabled, but the app stays up.", exc)
-    else:
-        LOGGER.warning("SESSION_STRING not set — indexing/streaming disabled")
+
+    watchdog_task = asyncio.create_task(_session_watchdog())
 
     keepalive_task = None
     if config.BASE_URL:
@@ -40,6 +71,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    watchdog_task.cancel()
     if keepalive_task:
         keepalive_task.cancel()
     from app import client as client_mod
