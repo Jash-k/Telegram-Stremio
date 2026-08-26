@@ -29,12 +29,17 @@ API_HASH = os.getenv("API_HASH", "")
 SESSION_STRING = os.getenv("SESSION_STRING", "")
 
 # ---------------------------------------------------------------------------
-# Optional bot token for streaming high-bitrate channels (e.g. your own 4K
+# Optional bot tokens for streaming high-bitrate channels (e.g. your own 4K
 # video-songs channel). Bots have a higher GetFile rate limit than user
-# sessions, so routing heavy files through a bot avoids flooding the user
-# account. The bot must be an ADMIN of each channel listed in BOT_CHANNELS.
+# sessions, so routing heavy files through bots avoids flooding the user
+# account. Each bot must be an ADMIN of each channel in BOT_CHANNELS.
+#
+# BOT_TOKENS accepts a comma-separated list (or BOT_TOKEN for a single one).
+# Multiple bots load-balance across their independent rate limits.
 # ---------------------------------------------------------------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKENS = _list("BOT_TOKENS")
+if not BOT_TOKENS and os.getenv("BOT_TOKEN"):
+    BOT_TOKENS = [x.strip() for x in os.getenv("BOT_TOKEN").split(",") if x.strip()]
 BOT_CHANNELS = _list("BOT_CHANNELS")
 
 # ---------------------------------------------------------------------------

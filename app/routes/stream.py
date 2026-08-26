@@ -30,18 +30,19 @@ def _get_streamer_for(client) -> Streamer:
 async def _pick_streamer(chat_id: int):
     """Choose (client, streamer) for a chat.
 
-    Routes BOT_CHANNELS through the bot (if configured + connected), everything
-    else through the user session. Returns (None, None) if neither is usable.
+    Routes BOT_CHANNELS through a bot (round-robin across bots if multiple),
+    everything else through the user session. Returns (None, None) if neither
+    is usable.
     """
     from app import client as user_mod
     from app import bot_client
 
-    # Bot first for its dedicated channels.
+    # Bot pool first for its dedicated channels.
     if bot_client.serves_chat(chat_id):
-        bot = await bot_client.ensure_started()
+        bot = await bot_client.pick_bot(chat_id)
         if bot is not None:
             return bot, _get_streamer_for(bot)
-        # Bot configured but down — fall through to the user session.
+        # Bots configured but all down — fall through to the user session.
 
     user = await user_mod.ensure_started()
     if user is None:
