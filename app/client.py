@@ -70,18 +70,30 @@ def _mark_disconnected(exc: Exception = None) -> None:
 
 
 async def start() -> Client:
-    """Start the userbot (used at app startup). Raises on failure."""
+    """Start the userbot (used at app startup). Raises on failure.
+
+    The connection is gated on the session lease so a redeploy overlap can't
+    race the previous pod and trigger AUTH_KEY_DUPLICATED.
+    """
     global client
+    from . import session_lease
+
+    if not await session_lease.try_acquire():
+        _mark_disconnected(RuntimeError("Session lease held by another instance"))
+        raise RuntimeError("Session lease held by another instance")
+
     if client is None:
         client = build()
     if not client.is_connected:
         try:
             await client.start()
         except Exception as exc:
+            await session_lease.release()
             _mark_disconnected(exc)
             raise
         await client.get_me()
         _mark_connected(client)
+        session_lease.start_heartbeat()
         LOGGER.info("Userbot online as %s (@%s)", _state["first_name"] or "?", _state["username"] or "?")
     return client
 
@@ -90,9 +102,12 @@ async def ensure_started() -> Client | None:
     """Connect (or reconnect) the userbot if it isn't connected.
 
     Returns the connected client, or None if a connection cannot be
-    established (e.g. session conflict). Never raises.
+    established (e.g. session conflict, or the lease is held elsewhere).
+    Never raises.
     """
     global client
+    from . import session_lease
+
     if client is None:
         client = build()
     if client.is_connected:
@@ -100,14 +115,22 @@ async def ensure_started() -> Client | None:
     async with _start_lock:
         if client.is_connected:
             return client
+
+        # Only connect if we own (or can claim) the lease.
+        if not session_lease.is_held() and not await session_lease.try_acquire():
+            _mark_disconnected(RuntimeError("Session lease held by another instance"))
+            return None
+
         _state["reconnect_attempts"] += 1
         try:
             await client.start()
             await client.get_me()
             _mark_connected(client)
+            session_lease.start_heartbeat()
             LOGGER.info("Userbot (re)connected as %s (@%s)", _state["first_name"] or "?", _state["username"] or "?")
             return client
         except Exception as exc:
+            await session_lease.release()
             _mark_disconnected(exc)
             LOGGER.error("Userbot could not connect: %s", exc)
             return None
@@ -126,7 +149,11 @@ def session_status() -> dict:
 
 async def stop() -> None:
     global client
+    from . import session_lease
+
     if client is not None and client.is_connected:
         await client.stop()
+    await session_lease.stop_heartbeat()
+    await session_lease.release()
     client = None
     _state["connected"] = False

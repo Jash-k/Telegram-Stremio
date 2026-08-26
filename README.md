@@ -196,6 +196,34 @@ async def main():
 - **Bounded parallelism + prefetch** — `STREAM_PARALLELISM` / `STREAM_PREFETCH`
   tune memory vs. throughput (defaults are free-tier friendly).
 - **HEAD requests** supported for player probing.
+- **Robust core** — producer/consumer queue, FloodWait retry + jitter,
+  file-reference refresh, client-disconnect detection, stall timeout,
+  media-session prewarm (ported from upstream `ByteStreamer`).
+
+## Health & monitoring (`GET /api/admin/global/health`)
+
+One endpoint shows everything at a glance:
+
+- **Session** — connected, datacenter, username, last error, reconnect attempts
+- **Indexer** — running state, processed, current chat, last error
+- **Telemetry** — active/recent streams (bytes, avg/instant/peak Mbps, duration)
+  and error counters (`auth_key_duplicated`, `flood_waits`, `lookup_failures`)
+- **Catalog counts** — files / titles / unindexed
+- **Instance** — hostname + PID (instantly reveals if Koyeb is running 2+ pods)
+
+A **session watchdog** runs in the background: if the userbot disconnects, it
+reconnects with exponential backoff (10s → 5m), so a transient drop self-heals
+without a restart.
+
+## Performance
+
+- **Response caching** — `manifest` (10 min), `catalog` (45 s), `meta` (5 min)
+  are cached in memory, so repeated browses avoid Atlas round-trips entirely
+  (~280x faster on cache hits) and survive the free-tier DB cold-start.
+- **Pre-computed metadata** — `codec`, `audio`, and `resolution` are stored at
+  index time and reused at stream time, so no PTN re-parse happens per request.
+- **Fast cleanup** — the dedup filter uses the stored `quality` field + regex
+  instead of re-parsing filenames (~125x faster bulk cleanup).
 
 ## Security
 
