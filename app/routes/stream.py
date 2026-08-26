@@ -120,7 +120,10 @@ async def download(token: str, sid: str, name: str, request: Request):
         "Content-Type": mime,
         "Content-Disposition": _content_disposition(file_name),
         "Accept-Ranges": "bytes",
-        "Cache-Control": "private, no-store, no-cache, must-revalidate",
+        # CRITICAL: never let Cloudflare/Koyeb edge cache a private stream.
+        # A public cacheable response makes the CDN serve the WHOLE file and
+        # swallow the Range header, which breaks seeking and hangs the player.
+        "Cache-Control": "private, no-store",
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
     }
