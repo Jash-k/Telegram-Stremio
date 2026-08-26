@@ -81,8 +81,14 @@ CHANNELS = _list("CHANNELS")
 # ---------------------------------------------------------------------------
 # Streaming tuning (Koyeb free tier friendly)
 # ---------------------------------------------------------------------------
-STREAM_PARALLELISM = _int("STREAM_PARALLELISM", 3)  # parallel Telegram reads
-STREAM_PREFETCH = _int("STREAM_PREFETCH", 6)        # chunks buffered ahead
+# User session: low parallelism (a user account floods easily at >1).
+STREAM_PARALLELISM = _int("STREAM_PARALLELISM", 2)  # parallel Telegram reads
+STREAM_PREFETCH = _int("STREAM_PREFETCH", 4)        # chunks buffered ahead
+
+# Bots tolerate a much higher GetFile concurrency, so 4K/heavy files streamed
+# through bots can use more parallelism for higher throughput.
+BOT_STREAM_PARALLELISM = _int("BOT_STREAM_PARALLELISM", 4)
+BOT_STREAM_PREFETCH = _int("BOT_STREAM_PREFETCH", 8)
 
 # Self-ping interval (minutes) to defeat Koyeb scale-to-zero.
 KEEPALIVE_MINUTES = _int("KEEPALIVE_MINUTES", 15)

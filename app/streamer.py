@@ -36,7 +36,8 @@ MEDIA_SESSION_TIMEOUT = 20.0  # session setup must not hang
 _FLOOD_COOLDOWN = 30.0        # stay at parallelism=1 for this long after a flood
 _MAX_FLOOD_RETRIES = 30       # patient ceiling on consecutive floods (~minutes)
 
-# Adaptive flood state (module-wide: all streams share one Telegram session).
+# Adaptive flood state (module-wide for health display; the actual throttling
+# decision is per-Streamer-instance so a user-session flood never throttles a bot).
 _last_flood = 0.0
 
 
@@ -46,13 +47,6 @@ def flood_state() -> dict:
         "last_flood_ago": round(time.time() - _last_flood, 1) if _last_flood else None,
         "throttled": time.time() - _last_flood < _FLOOD_COOLDOWN,
     }
-
-
-def _effective_parallelism(base: int) -> int:
-    """Drop to 1 concurrent request while a recent flood is cooling down."""
-    if time.time() - _last_flood < _FLOOD_COOLDOWN:
-        return 1
-    return base
 
 
 class FileNotFoundError_(Exception):
@@ -68,6 +62,7 @@ class Streamer:
         self.client = client
         self._session_lock = asyncio.Lock()
         self._cache: dict = {}
+        self._last_flood = 0.0  # per-client: a user flood must not throttle a bot
         asyncio.create_task(self._prewarm_sessions())
 
     # ------------------------------------------------------------------
@@ -255,8 +250,9 @@ class Streamer:
                         await refresh()
                     m = re.search(r"wait of (\d+) second", err, re.IGNORECASE)
                     if m:
-                        # FLOOD_WAIT = "slow down", not "stop". Record it (so the
-                        # adaptive logic drops concurrency) and keep retrying.
+                        # FLOOD_WAIT = "slow down", not "stop". Record it (per
+                        # client AND module-wide for the dashboard) and retry.
+                        self._last_flood = time.time()
                         _last_flood = time.time()
                         telemetry.bump("flood_waits")
                         wait = float(m.group(1)) + random.uniform(0.5, 2.0)
@@ -277,9 +273,11 @@ class Streamer:
                 next_to_schedule = 0
                 results_buffer: dict = {}
                 next_to_put = 0
-                # Adaptive: a user session floods at high concurrency, so drop to
-                # 1 while a flood cools down, then ramp back up.
-                max_parallel = max(1, _effective_parallelism(parallelism))
+                # Adaptive: drop to 1 while a recent flood cools down, then ramp
+                # back up (per-client, so bots and the user session are independent).
+                max_parallel = max(1, parallelism)
+                if time.time() - self._last_flood < _FLOOD_COOLDOWN:
+                    max_parallel = 1
 
                 for _ in range(min(part_count, max_parallel)):
                     seq = next_to_schedule

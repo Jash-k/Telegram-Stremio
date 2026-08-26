@@ -167,7 +167,14 @@ async def download(token: str, sid: str, name: str, request: Request):
         headers.pop("Content-Length", None)
 
     try:
-        gen = await streamer.stream(fid, start, end, chat_id=chat_id, message_id=msg_id, request=request)
+        is_bot = bool(getattr(client, "bot_token", None))
+        parallelism = config.BOT_STREAM_PARALLELISM if is_bot else config.STREAM_PARALLELISM
+        prefetch = config.BOT_STREAM_PREFETCH if is_bot else config.STREAM_PREFETCH
+        gen = await streamer.stream(
+            fid, start, end,
+            chat_id=chat_id, message_id=msg_id, request=request,
+            parallelism=parallelism, prefetch=prefetch,
+        )
     except ClientNotConnected as exc:
         # Media-session setup can fail (e.g. a rate-limited account). Surface a
         # clean 503 instead of hanging or crashing.
