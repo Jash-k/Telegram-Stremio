@@ -29,6 +29,15 @@ API_HASH = os.getenv("API_HASH", "")
 SESSION_STRING = os.getenv("SESSION_STRING", "")
 
 # ---------------------------------------------------------------------------
+# Optional bot token for streaming high-bitrate channels (e.g. your own 4K
+# video-songs channel). Bots have a higher GetFile rate limit than user
+# sessions, so routing heavy files through a bot avoids flooding the user
+# account. The bot must be an ADMIN of each channel listed in BOT_CHANNELS.
+# ---------------------------------------------------------------------------
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_CHANNELS = _list("BOT_CHANNELS")
+
+# ---------------------------------------------------------------------------
 # MongoDB (the GlobalDB). Schema-compatible with the existing `dbFyvio` DB:
 #   meta, files, unindexed, catalogs, state
 # ---------------------------------------------------------------------------

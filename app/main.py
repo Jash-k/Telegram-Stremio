@@ -14,34 +14,34 @@ from app.routes import admin, panel, stream, stremio
 
 
 async def _session_watchdog():
-    """Reconnect the userbot with backoff if its connection drops.
+    """Reconnect the userbot (and bot) with a gentle poll if a connection drops.
 
-    Does NOT fight a real duplicate (two live processes) — but auto-heals a
-    transient drop or a crashed connection within a few minutes.
+    Auto-heals a transient drop within ~60 s. Does NOT fight a real duplicate
+    (two live processes) — the lease handles that.
     """
+    from app import bot_client
     from app import client as client_mod
 
-    backoff = 10.0
     while True:
         await asyncio.sleep(60)
-        if not config.SESSION_STRING:
-            continue
-        if client_mod.is_connected():
-            backoff = 10.0
-            continue
-        try:
-            await client_mod.ensure_started()
-            if client_mod.is_connected():
-                # Live handlers may need re-installing after a fresh client.
-                from app.live import install
 
-                install(client_mod.client)
-                backoff = 10.0
-            else:
-                backoff = min(backoff * 2, 300.0)
-        except Exception:
-            backoff = min(backoff * 2, 300.0)
-        await asyncio.sleep(backoff)
+        # User session
+        if config.SESSION_STRING and not client_mod.is_connected():
+            try:
+                await client_mod.ensure_started()
+                if client_mod.is_connected():
+                    from app.live import install
+
+                    install(client_mod.client)
+            except Exception as exc:
+                LOGGER.warning("Watchdog: user reconnect failed: %s", exc)
+
+        # Bot
+        if bot_client.is_enabled() and not bot_client.is_connected():
+            try:
+                await bot_client.ensure_started()
+            except Exception as exc:
+                LOGGER.warning("Watchdog: bot reconnect failed: %s", exc)
 
 
 @asynccontextmanager
@@ -61,6 +61,15 @@ async def lifespan(app: FastAPI):
             # whole app down — keep serving catalogs/panel without the userbot.
             LOGGER.error("Userbot failed to start (%s). Indexing/streaming disabled, but the app stays up.", exc)
 
+    if config.BOT_TOKEN:
+        from app import bot_client
+
+        try:
+            await bot_client.start()
+        except Exception as exc:
+            # Bot down = bot channels fall back to the user session. Not fatal.
+            LOGGER.error("Bot failed to start (%s). Bot-channel streaming falls back to user session.", exc)
+
     watchdog_task = asyncio.create_task(_session_watchdog())
 
     keepalive_task = None
@@ -77,6 +86,9 @@ async def lifespan(app: FastAPI):
     from app import client as client_mod
 
     await client_mod.stop()
+    from app import bot_client
+
+    await bot_client.stop()
     await db.disconnect()
 
 

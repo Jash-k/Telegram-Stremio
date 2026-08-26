@@ -14,19 +14,39 @@ from app.token import decode_payload
 
 router = APIRouter(tags=["stream"])
 
-_streamer: Streamer = None
-_streamer_client = None
+_streamers: dict = {}
 
 
-def get_streamer() -> Streamer:
-    """Return a Streamer bound to the *current* client (rebuild on change)."""
-    global _streamer, _streamer_client
-    from app.client import client
+def _get_streamer_for(client) -> Streamer:
+    """Return a Streamer bound to a specific client (cached per client)."""
+    key = id(client)
+    s = _streamers.get(key)
+    if s is None or s.client is not client:
+        s = Streamer(client)
+        _streamers[key] = s
+    return s
 
-    if _streamer is None or _streamer_client is not client:
-        _streamer = Streamer(client)
-        _streamer_client = client
-    return _streamer
+
+async def _pick_streamer(chat_id: int):
+    """Choose (client, streamer) for a chat.
+
+    Routes BOT_CHANNELS through the bot (if configured + connected), everything
+    else through the user session. Returns (None, None) if neither is usable.
+    """
+    from app import client as user_mod
+    from app import bot_client
+
+    # Bot first for its dedicated channels.
+    if bot_client.serves_chat(chat_id):
+        bot = await bot_client.ensure_started()
+        if bot is not None:
+            return bot, _get_streamer_for(bot)
+        # Bot configured but down — fall through to the user session.
+
+    user = await user_mod.ensure_started()
+    if user is None:
+        return None, None
+    return user, _get_streamer_for(user)
 
 
 def parse_range(range_header: str, file_size: int):
@@ -73,19 +93,16 @@ async def download(token: str, sid: str, name: str, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid stream id")
 
-    # Make sure the userbot is connected before touching Telegram. This also
-    # recovers a client that disconnected after startup.
-    from app.client import ensure_started
-
-    client = await ensure_started()
-    if client is None:
+    # Make sure the appropriate client is connected before touching Telegram.
+    # Bot channels route through the bot; everything else through the userbot.
+    client, streamer = await _pick_streamer(chat_id)
+    if client is None or streamer is None:
         raise HTTPException(
             status_code=503,
-            detail="Streaming unavailable: Telegram userbot is not connected "
-                   "(check SESSION_STRING — it may be in use elsewhere).",
+            detail="Streaming unavailable: no Telegram client is connected "
+                   "(check SESSION_STRING / BOT_TOKEN).",
         )
 
-    streamer = get_streamer()
     try:
         fid = await streamer.file_properties(chat_id, msg_id)
     except ClientNotConnected:

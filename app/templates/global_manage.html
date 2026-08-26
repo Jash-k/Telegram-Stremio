@@ -98,6 +98,12 @@
         </div>
         <div class="table-wrap" style="margin-bottom:0;">
             <table>
+                <thead><tr><th colspan="2">Bot (4K / heavy files)</th></tr></thead>
+                <tbody id="health-bot"></tbody>
+            </table>
+        </div>
+        <div class="table-wrap" style="margin-bottom:0;">
+            <table>
                 <thead><tr><th colspan="2">Instance</th></tr></thead>
                 <tbody id="health-instance"></tbody>
             </table>
@@ -1131,6 +1137,22 @@ async function loadHealth() {
         ];
         document.getElementById('health-session').innerHTML = sessionRows.map(([k, v]) =>
             `<tr><td style="color:var(--text-sec);">${k}</td><td style="word-break:break-all;">${escapeHtml(String(v))}</td></tr>`).join('');
+
+        // Bot table
+        const bot = d.bot_session;
+        const botEl = document.getElementById('health-bot');
+        if (bot) {
+            const botRows = [
+                ['Connected', bot.connected ? 'Yes' : 'No'],
+                ['Bot', [bot.first_name, bot.username ? '@' + bot.username : ''].filter(Boolean).join(' ') || '—'],
+                ['Serves channels', (bot.channels || []).map(c => String(c)).join(', ') || '—'],
+                ['Last error', bot.last_error ? bot.last_error.split(':').slice(0,2).join(':') : 'None'],
+            ];
+            botEl.innerHTML = botRows.map(([k, v]) =>
+                `<tr><td style="color:var(--text-sec);">${k}</td><td style="word-break:break-all;">${escapeHtml(String(v))}</td></tr>`).join('');
+        } else {
+            botEl.innerHTML = '<tr><td colspan="2" style="text-align:center; color:var(--text-sec);">No bot configured (BOT_TOKEN)</td></tr>';
+        }
 
         // Instance table
         document.getElementById('health-instance').innerHTML = `

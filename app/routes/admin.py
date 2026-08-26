@@ -530,6 +530,12 @@ async def health(_: bool = Depends(require_auth)):
     from app.client import session_status
 
     session = session_status()
+    try:
+        from app import bot_client
+
+        bot_session = bot_client.session_status() if bot_client.is_enabled() else None
+    except Exception:
+        bot_session = None
 
     # DB counts (cheap-ish; the panel already calls these).
     files = await db.col("files").count_documents({})
@@ -564,6 +570,7 @@ async def health(_: bool = Depends(require_auth)):
     return {
         "overall": overall,
         "session": session,
+        "bot_session": bot_session,
         "indexer": status(),
         "cleanup_running": cleanup_running(),
         "catalog_counts": {"files": files, "meta": meta, "unindexed": unindexed},

@@ -188,6 +188,26 @@ async def main():
 
 ---
 
+## Bot streaming for heavy channels (4K video songs)
+
+A Telegram **user session** has a low `GetFile` concurrency limit (~3.3 MiB/s
+at safe parallelism), so high-bitrate files (4K video songs) buffer. A **bot
+token** has a higher limit and an independent rate bucket.
+
+To route heavy files through a bot:
+
+1. Create a bot with @BotFather → copy the token.
+2. Add the bot as **admin** to your heavy channel(s) (e.g. your 4K video-songs channel).
+3. Set:
+   ```
+   BOT_TOKEN=<token>
+   BOT_CHANNELS=-1001234567890
+   ```
+4. Deploy. Streams from those channels now use the bot; everything else still
+   uses your user session. The bot shows its own status in the Health tab.
+
+Bots cost ~20 MB RAM and ~0 CPU (asyncio I/O), so one bot is free-tier safe.
+
 ## Streaming quality
 
 - **HTTP Range / seeking** — full support (`Accept-Ranges: bytes`, 206 responses).

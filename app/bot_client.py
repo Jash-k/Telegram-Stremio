@@ -1,10 +1,9 @@
-"""Single Telegram userbot client.
+"""Optional Telegram BOT client for streaming specific channels.
 
-The session string grants access to the channels being indexed, so it powers
-both the indexer AND the stream proxy (no bot token needed).
-
-Also exposes session status for the health dashboard and supports the
-background watchdog (reconnect with backoff).
+A bot token has a higher GetFile rate limit than a user session, so routing
+heavy (e.g. 4K) files through the bot avoids flooding the user account. The
+bot only serves the channels listed in BOT_CHANNELS — everything else streams
+through the user session.
 """
 import asyncio
 import time
@@ -17,9 +16,8 @@ from .session_lease import SessionLease
 
 client: Client = None
 _start_lock = asyncio.Lock()
-_lease = SessionLease("userbot_session", "userbot")
+_lease = SessionLease("bot_session", "bot")
 
-# Session state (read by the health dashboard + watchdog).
 _state = {
     "connected": False,
     "dc_id": None,
@@ -32,16 +30,44 @@ _state = {
 }
 
 
+def is_enabled() -> bool:
+    return bool(config.BOT_TOKEN)
+
+
+def _resolve(ids) -> set:
+    """Normalize channel ids to full -100 form (matches the stream token)."""
+    out = set()
+    for c in ids:
+        c = str(c).strip()
+        if not c:
+            continue
+        try:
+            n = int(c)
+        except ValueError:
+            continue
+        out.add(n if n < 0 else int(f"-100{n}"))
+    return out
+
+
+def channel_set() -> set:
+    return _resolve(config.BOT_CHANNELS)
+
+
+def serves_chat(chat_id: int) -> bool:
+    """Whether this bot should stream the given chat."""
+    return is_enabled() and int(chat_id) in channel_set()
+
+
 def build() -> Client:
     return Client(
-        name="globaldb_userbot",
+        name="globaldb_bot",
         api_id=config.API_ID,
         api_hash=config.API_HASH,
-        session_string=config.SESSION_STRING,
+        bot_token=config.BOT_TOKEN,
         sleep_threshold=20,
         workers=4,
         max_concurrent_transmissions=3,
-        no_updates=False,
+        no_updates=True,
         in_memory=True,
     )
 
@@ -72,16 +98,14 @@ def _mark_disconnected(exc: Exception = None) -> None:
 
 
 async def start() -> Client:
-    """Start the userbot (used at app startup). Raises on failure.
-
-    The connection is gated on the session lease so a redeploy overlap can't
-    race the previous pod and trigger AUTH_KEY_DUPLICATED.
-    """
+    """Start the bot (used at app startup). Raises on failure."""
     global client
-    
+    if not is_enabled():
+        raise RuntimeError("BOT_TOKEN not configured")
+
     if not await _lease.try_acquire():
-        _mark_disconnected(RuntimeError("Session lease held by another instance"))
-        raise RuntimeError("Session lease held by another instance")
+        _mark_disconnected(RuntimeError("Bot lease held by another instance"))
+        raise RuntimeError("Bot lease held by another instance")
 
     if client is None:
         client = build()
@@ -95,19 +119,15 @@ async def start() -> Client:
         await client.get_me()
         _mark_connected(client)
         _lease.start_heartbeat()
-        LOGGER.info("Userbot online as %s (@%s)", _state["first_name"] or "?", _state["username"] or "?")
+        LOGGER.info("Bot online as @%s", _state["username"] or "?")
     return client
 
 
 async def ensure_started() -> Client | None:
-    """Connect (or reconnect) the userbot if it isn't connected.
-
-    Returns the connected client, or None if a connection cannot be
-    established (e.g. session conflict, or the lease is held elsewhere).
-    Never raises.
-    """
+    """Connect (or reconnect) the bot if it isn't connected. Never raises."""
     global client
-    
+    if not is_enabled():
+        return None
     if client is None:
         client = build()
     if client.is_connected:
@@ -115,24 +135,21 @@ async def ensure_started() -> Client | None:
     async with _start_lock:
         if client.is_connected:
             return client
-
-        # Only connect if we own (or can claim) the lease.
         if not _lease.is_held() and not await _lease.try_acquire():
-            _mark_disconnected(RuntimeError("Session lease held by another instance"))
+            _mark_disconnected(RuntimeError("Bot lease held by another instance"))
             return None
-
         _state["reconnect_attempts"] += 1
         try:
             await client.start()
             await client.get_me()
             _mark_connected(client)
             _lease.start_heartbeat()
-            LOGGER.info("Userbot (re)connected as %s (@%s)", _state["first_name"] or "?", _state["username"] or "?")
+            LOGGER.info("Bot (re)connected as @%s", _state["username"] or "?")
             return client
         except Exception as exc:
             await _lease.release()
             _mark_disconnected(exc)
-            LOGGER.error("Userbot could not connect: %s", exc)
+            LOGGER.error("Bot could not connect: %s", exc)
             return None
 
 
@@ -141,15 +158,15 @@ def is_connected() -> bool:
 
 
 def session_status() -> dict:
-    """Snapshot of session state for the health dashboard."""
+    """Snapshot of bot state for the health dashboard."""
     status = dict(_state)
     status["connected"] = is_connected()
+    status["channels"] = sorted(channel_set(), key=abs)
     return status
 
 
 async def stop() -> None:
     global client
-    
     if client is not None and client.is_connected:
         await client.stop()
     await _lease.stop_heartbeat()
