@@ -61,7 +61,7 @@ async def lifespan(app: FastAPI):
             # whole app down — keep serving catalogs/panel without the userbot.
             LOGGER.error("Userbot failed to start (%s). Indexing/streaming disabled, but the app stays up.", exc)
 
-    if config.BOT_TOKEN:
+    if config.BOT_TOKENS:
         from app import bot_client
 
         try:
