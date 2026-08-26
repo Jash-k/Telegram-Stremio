@@ -210,6 +210,7 @@ class Streamer:
         queue: asyncio.Queue = asyncio.Queue(maxsize=max(1, prefetch))
 
         telemetry.bump("stream_requests")
+        telemetry.bump("stream_started")
         stream_id = f"{id(self)}-{int(time.time() * 1000)}"
         entry = telemetry.register_stream(stream_id, {"title": getattr(fid, "file_name", "") or ""})
 

@@ -50,12 +50,20 @@ def register_stream(stream_id: str, meta: dict) -> dict:
 
 def note_chunk(entry: dict, nbytes: int) -> None:
     now = time.time()
-    elapsed = now - entry["last_ts"]
-    if elapsed <= 0:
-        elapsed = 1e-6
     entry["total_bytes"] += nbytes
     entry["last_ts"] = now
-    instant = (nbytes / (1024 * 1024)) / elapsed
+    # Instant speed over a rolling ~2s window (not per-chunk, which spikes to
+    # nonsense during prefetch bursts).
+    win = entry.setdefault("window", [])
+    win.append((now, nbytes))
+    cutoff = now - 2.0
+    entry["window"] = [(t, b) for t, b in win if t >= cutoff]
+    window_bytes = sum(b for _, b in entry["window"])
+    if entry["window"]:
+        window_time = now - entry["window"][0][0]
+    else:
+        window_time = 1e-6
+    instant = (window_bytes / (1024 * 1024)) / max(window_time, 0.1)
     entry["instant_mbps"] = instant
     if instant > entry.get("peak_mbps", 0.0):
         entry["peak_mbps"] = instant
@@ -67,9 +75,14 @@ def finish_stream(stream_id: str, status: str = "finished") -> None:
     entry = ACTIVE_STREAMS.pop(stream_id, None)
     if not entry:
         return
+    entry.pop("window", None)
     entry["status"] = status
     entry["end_ts"] = time.time()
     entry["duration"] = entry["end_ts"] - entry["start_ts"]
+    if status == "finished":
+        bump("stream_finished")
+    else:
+        bump("stream_errors")
     RECENT_STREAMS.appendleft(entry)
 
 
