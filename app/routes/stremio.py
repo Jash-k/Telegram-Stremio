@@ -10,9 +10,11 @@ from app import parser as P
 from app import token as tok
 from app.cache import (
     CATALOG_TTL,
+    FILE_IDS_TTL,
     MANIFEST_TTL,
     META_TTL,
     catalog_cache,
+    file_ids_cache,
     manifest_cache,
     meta_cache,
 )
@@ -73,6 +75,15 @@ def _format_stream_title(filename: str, quality: str, size: str) -> str:
     return f"📁 {filename}\n💾 {size}"
 
 
+async def _meta_ids_with_files() -> frozenset:
+    """Meta ids that currently have >=1 file (cached). Used to hide orphan titles."""
+    ids = file_ids_cache.get("ids")
+    if ids is None:
+        ids = frozenset(await db.col("files").distinct("meta_id"))
+        file_ids_cache.set("ids", ids, FILE_IDS_TTL)
+    return ids
+
+
 # ---------------------------------------------------------------------------
 # Manifest
 # ---------------------------------------------------------------------------
@@ -89,9 +100,14 @@ async def manifest(token: str):
         return cached
 
     catalogs = []
+    ids_with_files = await _meta_ids_with_files()
     counts = {}
-    async for c in db.col("meta").aggregate([{"$group": {"_id": "$catalog", "count": {"$sum": 1}}}]):
-        counts[c["_id"]] = c["count"]
+    if ids_with_files:
+        async for c in db.col("meta").aggregate([
+            {"$match": {"_id": {"$in": list(ids_with_files)}}},
+            {"$group": {"_id": "$catalog", "count": {"$sum": 1}}},
+        ]):
+            counts[c["_id"]] = c["count"]
     g_cats = await db.col("catalogs").find().sort("order", 1).to_list(None)
     for gc in g_cats:
         if counts.get(gc["_id"], 0) > 0:
@@ -169,6 +185,10 @@ async def catalog(token: str, media_type: str, id: str, extra: str = None):
     real_id = id.replace("global_", "", 1)
 
     query = {"catalog": real_id}
+    # Only list titles that actually have playable files (hides orphan metas).
+    ids_with_files = await _meta_ids_with_files()
+    if ids_with_files:
+        query["_id"] = {"$in": list(ids_with_files)}
     if search_query:
         query["title"] = {"$regex": re.escape(search_query), "$options": "i"}
     if genre_filter:

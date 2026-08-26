@@ -51,10 +51,12 @@ class TTLCache:
 manifest_cache = TTLCache()   # key: token -> manifest dict
 catalog_cache = TTLCache()    # key: (token, type, id, extra) -> metas dict
 meta_cache = TTLCache()       # key: (token, media_type, id) -> meta dict
+file_ids_cache = TTLCache()   # key: "ids" -> frozenset of meta_ids that have files
 
 MANIFEST_TTL = 600.0   # 10 min
 CATALOG_TTL = 45.0     # 45 s
 META_TTL = 300.0       # 5 min
+FILE_IDS_TTL = 120.0   # 2 min (orphan filter)
 
 
 def invalidate_all():
@@ -62,3 +64,4 @@ def invalidate_all():
     manifest_cache.clear()
     catalog_cache.clear()
     meta_cache.clear()
+    file_ids_cache.clear()
