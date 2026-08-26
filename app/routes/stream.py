@@ -120,7 +120,7 @@ async def download(token: str, sid: str, name: str, request: Request):
         "Content-Type": mime,
         "Content-Disposition": _content_disposition(file_name),
         "Accept-Ranges": "bytes",
-        "Cache-Control": "public, max-age=3600",
+        "Cache-Control": "private, no-store, no-cache, must-revalidate",
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
     }
