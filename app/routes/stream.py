@@ -145,5 +145,10 @@ async def download(token: str, sid: str, name: str, request: Request):
         # "Response content shorter than Content-Length".
         headers.pop("Content-Length", None)
 
-    gen = await streamer.stream(fid, start, end, chat_id=chat_id, message_id=msg_id, request=request)
+    try:
+        gen = await streamer.stream(fid, start, end, chat_id=chat_id, message_id=msg_id, request=request)
+    except ClientNotConnected as exc:
+        # Media-session setup can fail (e.g. a rate-limited account). Surface a
+        # clean 503 instead of hanging or crashing.
+        raise HTTPException(status_code=503, detail=f"Streaming unavailable: {exc}")
     return StreamingResponse(gen, status_code=status, headers=headers, media_type=mime)

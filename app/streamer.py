@@ -1,17 +1,19 @@
 """Range-aware Telegram byte streamer.
 
-Ports the robust streaming core of the upstream Telegram-Stremio `ByteStreamer`
-(weebzone/Telegram-Stremio) into this lean project:
+Robust streaming core (ported from upstream `ByteStreamer`) plus adaptive
+flood handling for a single user session:
 
   * producer/consumer with an ordered, bounded asyncio.Queue
-  * `asyncio.wait(FIRST_COMPLETED)` so `parallelism` chunks are always in flight
-  * per-chunk retries with FloodWait jitter + FILE_REFERENCE refresh
-  * client-disconnect detection (aborts early, saves bandwidth)
-  * producer-stall timeout (90 s) so a hung stream never spins forever
-  * media-session prewarm for the common datacenters (kills first-byte latency)
+  * `asyncio.wait(FIRST_COMPLETED)` so `parallelism` chunks are in flight
+  * media-session setup is TIMEOUT-BOUND (a throttled DC can never hang a stream)
+  * FLOOD_WAIT is "slow down", not "stop" — retried patiently instead of killing the stream
+  * adaptive parallelism: any flood temporarily drops concurrency to 1, then
+    ramps back up after a quiet period (a user session floods easily at >1)
+  * FILE_REFERENCE refresh + client-disconnect detection + stall timeout
 
-Single-userbot (no multi-client session pool or telemetry — kept lean for
-Koyeb free tier).
+Telegram user sessions have a low `GetFile` concurrency limit. This module
+keeps throughput as high as Telegram will allow *without* tripping its flood
+protection — and when it does flood, it degrades gracefully instead of dying.
 """
 import asyncio
 import random
@@ -28,8 +30,29 @@ from . import config
 from . import telemetry
 from .logger import LOGGER
 
-CHUNK_SIZE = 1024 * 1024  # 1 MiB
-STALL_TIMEOUT = 90.0      # abort if no chunk for this long
+CHUNK_SIZE = 1024 * 1024     # 1 MiB
+STALL_TIMEOUT = 90.0         # abort if no chunk for this long
+MEDIA_SESSION_TIMEOUT = 20.0  # session setup must not hang
+_FLOOD_COOLDOWN = 30.0        # stay at parallelism=1 for this long after a flood
+_MAX_FLOOD_RETRIES = 30       # patient ceiling on consecutive floods (~minutes)
+
+# Adaptive flood state (module-wide: all streams share one Telegram session).
+_last_flood = 0.0
+
+
+def flood_state() -> dict:
+    """Expose adaptive-flood state (for the health dashboard)."""
+    return {
+        "last_flood_ago": round(time.time() - _last_flood, 1) if _last_flood else None,
+        "throttled": time.time() - _last_flood < _FLOOD_COOLDOWN,
+    }
+
+
+def _effective_parallelism(base: int) -> int:
+    """Drop to 1 concurrent request while a recent flood is cooling down."""
+    if time.time() - _last_flood < _FLOOD_COOLDOWN:
+        return 1
+    return base
 
 
 class FileNotFoundError_(Exception):
@@ -83,10 +106,44 @@ class Streamer:
             return None
 
     # ------------------------------------------------------------------
-    # Media sessions
+    # Media sessions (timeout-bound)
     # ------------------------------------------------------------------
+    async def _open_session(self, dc: int) -> Session:
+        """Create + start a media session to a DC (no timeout inside — caller bounds it)."""
+        test_mode = await self.client.storage.test_mode()
+        current_dc = await self.client.storage.dc_id()
+
+        if dc != current_dc:
+            auth_key = await Auth(self.client, dc, test_mode).create()
+        else:
+            auth_key = await self.client.storage.auth_key()
+
+        session = Session(self.client, dc, auth_key, test_mode, is_media=True)
+        session.no_updates = True
+        session.timeout = 30
+        session.sleep_threshold = 60
+        await session.start()
+
+        if dc != current_dc:
+            for _ in range(6):
+                try:
+                    exported = await self.client.invoke(
+                        raw.functions.auth.ExportAuthorization(dc_id=dc)
+                    )
+                    await session.send(
+                        raw.functions.auth.ImportAuthorization(
+                            id=exported.id, bytes=exported.bytes
+                        )
+                    )
+                    break
+                except AuthBytesInvalid:
+                    await asyncio.sleep(0.5)
+                except OSError:
+                    await asyncio.sleep(1)
+        return session
+
     async def _prewarm_sessions(self) -> None:
-        """Open media sessions for the common DCs up front (lower first-byte latency)."""
+        """Open media sessions for common DCs up front (timeout-bounded)."""
         if self.client is None or not self.client.is_connected:
             return
         try:
@@ -98,35 +155,8 @@ class Streamer:
             if dc in self.client.media_sessions or dc == current_dc:
                 continue
             try:
-                auth_key = await Auth(self.client, dc, test_mode).create()
-                session = Session(self.client, dc, auth_key, test_mode, is_media=True)
-                session.no_updates = True
-                session.timeout = 30
-                session.sleep_threshold = 60
-                await session.start()
-                imported = False
-                for _ in range(6):
-                    try:
-                        exported = await self.client.invoke(
-                            raw.functions.auth.ExportAuthorization(dc_id=dc)
-                        )
-                        await session.send(
-                            raw.functions.auth.ImportAuthorization(
-                                id=exported.id, bytes=exported.bytes
-                            )
-                        )
-                        imported = True
-                        break
-                    except AuthBytesInvalid:
-                        await asyncio.sleep(0.5)
-                    except OSError:
-                        await asyncio.sleep(1)
-                    except Exception:
-                        break
-                if imported:
-                    self.client.media_sessions[dc] = session
-                else:
-                    await session.stop()
+                session = await asyncio.wait_for(self._open_session(dc), timeout=MEDIA_SESSION_TIMEOUT)
+                self.client.media_sessions[dc] = session
             except Exception:
                 continue
 
@@ -138,38 +168,12 @@ class Streamer:
         async with self._session_lock:
             if dc in self.client.media_sessions:
                 return self.client.media_sessions[dc]
-
-            test_mode = await self.client.storage.test_mode()
-            current_dc = await self.client.storage.dc_id()
-
-            if dc != current_dc:
-                auth_key = await Auth(self.client, dc, test_mode).create()
-            else:
-                auth_key = await self.client.storage.auth_key()
-
-            session = Session(self.client, dc, auth_key, test_mode, is_media=True)
-            session.no_updates = True
-            session.timeout = 30
-            session.sleep_threshold = 60
-            await session.start()
-
-            if dc != current_dc:
-                for _ in range(6):
-                    try:
-                        exported = await self.client.invoke(
-                            raw.functions.auth.ExportAuthorization(dc_id=dc)
-                        )
-                        await session.send(
-                            raw.functions.auth.ImportAuthorization(
-                                id=exported.id, bytes=exported.bytes
-                            )
-                        )
-                        break
-                    except AuthBytesInvalid:
-                        await asyncio.sleep(0.5)
-                    except OSError:
-                        await asyncio.sleep(1)
-
+            try:
+                session = await asyncio.wait_for(self._open_session(dc), timeout=MEDIA_SESSION_TIMEOUT)
+            except asyncio.TimeoutError:
+                raise ClientNotConnected(f"media session to DC {dc} timed out (account may be rate-limited)")
+            except Exception as exc:
+                raise ClientNotConnected(f"media session to DC {dc} failed: {type(exc).__name__}")
             self.client.media_sessions[dc] = session
             return session
 
@@ -183,7 +187,7 @@ class Streamer:
         )
 
     # ------------------------------------------------------------------
-    # Streaming (producer/consumer, range-aware)
+    # Streaming (producer/consumer, range-aware, flood-adaptive)
     # ------------------------------------------------------------------
     async def stream(
         self,
@@ -210,7 +214,6 @@ class Streamer:
         stop_event = asyncio.Event()
         queue: asyncio.Queue = asyncio.Queue(maxsize=max(1, prefetch))
 
-        # Telemetry: register this stream for the health dashboard.
         telemetry.bump("stream_requests")
         stream_id = f"{id(self)}-{int(time.time() * 1000)}"
         entry = telemetry.register_stream(stream_id, {"title": getattr(fid, "file_name", "") or ""})
@@ -225,10 +228,11 @@ class Streamer:
             return False
 
         async def fetch_chunk(seq: int, off: int):
-            """Fetch one chunk; returns (seq, bytes) or (seq, None) on failure."""
+            """Fetch one chunk; returns (seq, bytes) or (seq, None) if unrecoverable."""
+            global _last_flood
             tries = 0
             flood_tries = 0
-            while tries < 3 and flood_tries < 5 and not stop_event.is_set():
+            while tries < 3 and flood_tries < _MAX_FLOOD_RETRIES and not stop_event.is_set():
                 try:
                     r = await asyncio.wait_for(
                         session.send(
@@ -251,6 +255,10 @@ class Streamer:
                         await refresh()
                     m = re.search(r"wait of (\d+) second", err, re.IGNORECASE)
                     if m:
+                        # FLOOD_WAIT = "slow down", not "stop". Record it (so the
+                        # adaptive logic drops concurrency) and keep retrying.
+                        _last_flood = time.time()
+                        telemetry.bump("flood_waits")
                         wait = float(m.group(1)) + random.uniform(0.5, 2.0)
                         flood_tries += 1
                         await asyncio.sleep(wait)
@@ -269,7 +277,9 @@ class Streamer:
                 next_to_schedule = 0
                 results_buffer: dict = {}
                 next_to_put = 0
-                max_parallel = max(1, parallelism)
+                # Adaptive: a user session floods at high concurrency, so drop to
+                # 1 while a flood cools down, then ramp back up.
+                max_parallel = max(1, _effective_parallelism(parallelism))
 
                 for _ in range(min(part_count, max_parallel)):
                     seq = next_to_schedule
@@ -342,8 +352,6 @@ class Streamer:
             part_idx = 1
             try:
                 while True:
-                    # Detect a closed client connection every chunk (players
-                    # buffer ahead and disconnect well before the file ends).
                     try:
                         if request is not None and await request.is_disconnected():
                             stop_event.set()

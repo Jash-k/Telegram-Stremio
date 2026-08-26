@@ -538,6 +538,14 @@ async def health(_: bool = Depends(require_auth)):
 
     tele = telemetry.snapshot()
 
+    # Adaptive flood state (is the account currently throttled?).
+    try:
+        from app.streamer import flood_state
+
+        tele["flood"] = flood_state()
+    except Exception:
+        tele["flood"] = {"throttled": False}
+
     # Instance identity — makes "I have N pods" immediately obvious.
     try:
         instance = {
