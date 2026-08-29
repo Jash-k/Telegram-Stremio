@@ -25,7 +25,13 @@ from app.indexer import (
     status,
 )
 from app.logger import LOGGER
-from app.metadata import format_tmdb_image, tmdb_details, tmdb_find_by_imdb, year_number
+from app.metadata import (
+    format_tmdb_image,
+    tmdb_details,
+    tmdb_find_by_imdb,
+    tmdb_search_multi,
+    year_number,
+)
 from app.migration import migration_status, request_stop as migration_stop, start_migration
 from app.parser import (
     determine_catalog,
@@ -277,6 +283,36 @@ async def _resolve_tmdb(input_id: str, media_type: str):
         return int(input_id.replace("tmdb:", "").replace("song:tmdb:", ""))
     except ValueError:
         return None
+
+
+@router.get("/tmdb/search")
+async def tmdb_search_endpoint(query: str = "", media_type: str = "movie", year: str = "", _: bool = Depends(require_auth)):
+    """Live TMDb title search for the admin 'Link TMDB' picker.
+
+    Returns lightweight candidates (id, title, year, poster, overview) so the
+    panel can show a pick-list instead of requiring a raw TMDb ID/URL.
+    """
+    query = (query or "").strip()
+    if not query:
+        return {"results": []}
+    tmdb_type = "tv" if media_type == "series" else "movie"
+    year_int = None
+    if year:
+        try:
+            year_int = int(year)
+        except ValueError:
+            year_int = None
+    results = await tmdb_search_multi(query, tmdb_type, year_int)
+    out = []
+    for r in results:
+        out.append({
+            "tmdb_id": r.get("id"),
+            "title": r.get("title") or r.get("name") or "",
+            "year": ((r.get("release_date") or r.get("first_air_date") or "")[:4]) or None,
+            "poster": format_tmdb_image(r.get("poster_path"), "w154"),
+            "overview": r.get("overview") or "",
+        })
+    return {"results": out}
 
 
 @router.post("/files/batch_map")

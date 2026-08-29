@@ -46,6 +46,20 @@ async def tmdb_search(title: str, media_type: str, year=None) -> Optional[dict]:
     return results[0] if results else None
 
 
+async def tmdb_search_multi(title: str, media_type: str, year=None, limit: int = 10) -> list[dict]:
+    """Return up to `limit` raw TMDb search results (for admin picker UIs)."""
+    if not title:
+        return []
+    path = "/search/movie" if media_type == "movie" else "/search/tv"
+    params = {"query": title, "include_adult": "true", "language": "en-US"}
+    if media_type == "movie" and year:
+        params["year"] = int(year)
+    data = await _get(path, params)
+    if not data:
+        return []
+    return (data.get("results") or [])[:limit]
+
+
 async def tmdb_details(media_type: str, tmdb_id) -> Optional[dict]:
     path = f"/{'movie' if media_type == 'movie' else 'tv'}/{tmdb_id}"
     return await _get(path, {"append_to_response": "external_ids", "language": "en-US"})
