@@ -78,8 +78,13 @@ async def lifespan(app: FastAPI):
 
         keepalive_task = asyncio.create_task(keepalive_loop())
 
+    # Start PreDVD Leech Automator loop
+    from app import predvd_automator
+    predvd_automator.start()
+
     yield
 
+    predvd_automator.stop()
     watchdog_task.cancel()
     if keepalive_task:
         keepalive_task.cancel()

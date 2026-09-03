@@ -613,3 +613,119 @@ async def health(_: bool = Depends(require_auth)):
         "telemetry": tele,
         "instance": instance,
     }
+
+
+# ---------------------------------------------------------------------------
+# PreDVD Leech Automator & Lifecycle Endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/predvd/status", dependencies=[Depends(require_auth)])
+async def get_predvd_status():
+    from app import predvd_automator
+    settings = await predvd_automator.get_settings()
+    status_info = predvd_automator.get_status()
+    snapshot_count = await db.col("predvd_snapshot").count_documents({})
+    history_count = await db.col("predvd_history").count_documents({})
+    return {
+        "status": status_info,
+        "settings": settings,
+        "snapshot_count": snapshot_count,
+        "history_count": history_count,
+    }
+
+
+@router.get("/predvd/settings", dependencies=[Depends(require_auth)])
+async def get_predvd_settings():
+    from app import predvd_automator
+    return await predvd_automator.get_settings()
+
+
+@router.post("/predvd/settings", dependencies=[Depends(require_auth)])
+async def update_predvd_settings(request: Request):
+    from app import predvd_automator
+    body = await request.json()
+    saved = await predvd_automator.save_settings(body)
+    return {"ok": True, "settings": saved}
+
+
+@router.get("/predvd/feed", dependencies=[Depends(require_auth)])
+async def get_predvd_feed():
+    from app import predvd_automator
+    feed_items = await predvd_automator.fetch_feed()
+    tamil_predvds = []
+    for m in feed_items:
+        if predvd_automator.is_tamil_release(m) and predvd_automator.is_predvd_release(m):
+            key = m.get("imdbId") or m.get("name") or m.get("titleGuess") or m.get("rawTitle")
+            snapshot_doc = await db.col("predvd_snapshot").find_one({"_id": key}) if key else None
+            tamil_predvds.append({
+                "title": m.get("name") or m.get("titleGuess") or m.get("rawTitle"),
+                "year": m.get("year") or m.get("yearGuess"),
+                "imdb_id": m.get("imdbId"),
+                "poster": m.get("poster") or m.get("thumbnail"),
+                "languages": m.get("languages") or ["Tamil"],
+                "qualities": m.get("qualities") or [],
+                "is_baseline": bool(snapshot_doc and snapshot_doc.get("is_baseline")),
+                "leeched": bool(snapshot_doc and snapshot_doc.get("leeched")),
+                "raw_text": m.get("rawText") or "",
+            })
+    return {"ok": True, "count": len(tamil_predvds), "items": tamil_predvds}
+
+
+@router.get("/predvd/history", dependencies=[Depends(require_auth)])
+async def get_predvd_history(limit: int = 50):
+    cursor = db.col("predvd_history").find({}).sort("timestamp", -1).limit(limit)
+    rows = await cursor.to_list(None)
+    for r in rows:
+        r["_id"] = str(r["_id"])
+    return {"ok": True, "history": rows}
+
+
+@router.post("/predvd/sync", dependencies=[Depends(require_auth)])
+async def trigger_predvd_sync():
+    from app import predvd_automator
+    result = await predvd_automator.process_feed_iteration()
+    return {"ok": True, "result": result}
+
+
+@router.post("/predvd/reset-baseline", dependencies=[Depends(require_auth)])
+async def trigger_reset_baseline():
+    from app import predvd_automator
+    count = await predvd_automator.reset_baseline_snapshot()
+    return {"ok": True, "baseline_count": count, "message": f"Baseline snapshot reset with {count} movies. Existing PreDVDs will be ignored."}
+
+
+@router.post("/predvd/manual-leech", dependencies=[Depends(require_auth)])
+async def trigger_manual_leech(request: Request):
+    from app import predvd_automator
+    body = await request.json()
+    magnet_url = (body.get("magnet_url") or "").strip()
+    title = (body.get("title") or "Manual Leech").strip()
+    quality = (body.get("quality") or "PreDVD").strip()
+
+    if not magnet_url.startswith("magnet:"):
+        raise HTTPException(status_code=400, detail="Invalid magnet URL")
+
+    settings = await predvd_automator.get_settings()
+    group_id = settings.get("group_id", "-1002695497393")
+    command_prefix = settings.get("command_prefix", "/qbleech@AmitPremium_leechbot")
+
+    success = await predvd_automator.send_leech_command(
+        group_id=group_id,
+        command_prefix=command_prefix,
+        magnet_url=magnet_url,
+        title=title,
+        quality=quality
+    )
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to send leech command via userbot")
+
+    await db.col("predvd_history").insert_one({
+        "action": "manual_leech_sent",
+        "title": title,
+        "quality": quality,
+        "magnet_url": magnet_url,
+        "timestamp": time.time()
+    })
+
+    return {"ok": True, "message": f"Leech command sent for {title}!"}
+

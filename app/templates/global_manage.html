@@ -78,6 +78,132 @@
     <button id="tab-dash" class="btn btn-primary" style="white-space:nowrap;" onclick="switchView('dashboard')"><i class="fa-solid fa-layer-group"></i> Catalogs</button>
     <button id="tab-channels" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('channels')"><i class="fa-solid fa-server"></i> Channels</button>
     <button id="tab-unidx" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('unindexed')"><i class="fa-solid fa-triangle-exclamation"></i> Unindexed Queue <span id="unindexed-badge" class="badge" style="display:none; background:#ef4444; color:white; margin-left:5px;">0</span></button>
+    <button id="tab-predvd" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('predvd')"><i class="fa-solid fa-fire-flame-curved" style="color:#f43f5e;"></i> PreDVD Auto-Leech</button>
+</div>
+
+<!-- PreDVD Auto-Leech View -->
+<div id="view-predvd" style="display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; flex-wrap:wrap; gap:10px;">
+        <div>
+            <h3 style="font-size:1.1rem; font-weight:600; display:flex; align-items:center; gap:8px;">
+                <i class="fa-solid fa-fire-flame-curved" style="color:#f43f5e;"></i>
+                <span>Tamil PreDVD Auto-Leecher & Stream Manager</span>
+            </h3>
+            <p style="font-size:0.8rem; color:var(--text-sec); margin-top:2px;">
+                Auto-leeches new Tamil PreDVDs into your group and auto-purges old PreDVDs when official prints arrive.
+            </p>
+        </div>
+        <div style="display:flex; gap:8px;">
+            <button onclick="syncPreDVDFeed()" class="btn btn-primary" style="background:#f43f5e; border-color:#e11d48; padding:0.4rem 0.8rem; font-size:0.85rem;"><i class="fa-solid fa-rotate"></i> Check Feed Now</button>
+            <button onclick="resetBaseline()" class="btn btn-ghost" style="padding:0.4rem 0.8rem; font-size:0.85rem;" title="Mark current feed as baseline snapshot so pre-existing movies are ignored"><i class="fa-solid fa-camera"></i> Reset Baseline</button>
+        </div>
+    </div>
+
+    <!-- PreDVD Stats Cards -->
+    <div class="global-stats" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
+        <div class="stat-card">
+            <div class="stat-val" id="predvd-stat-status" style="color:#22c55e;">Enabled</div>
+            <div class="stat-lbl">Automation Engine</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-val" id="predvd-stat-baseline" style="color:#0ea5e9;">0</div>
+            <div class="stat-lbl">Baseline Movies Ignored</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-val" id="predvd-stat-history" style="color:#f43f5e;">0</div>
+            <div class="stat-lbl">Leech Tasks Sent</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-val" id="predvd-stat-feed-count" style="color:#eab308;">0</div>
+            <div class="stat-lbl">Live Tamil PreDVDs</div>
+        </div>
+    </div>
+
+    <!-- Settings Card -->
+    <div class="table-wrap" style="padding:1.25rem; margin-bottom:1.5rem;">
+        <h4 style="font-size:0.95rem; font-weight:600; margin-bottom:1rem; display:flex; align-items:center; gap:6px;">
+            <i class="fa-solid fa-sliders" style="color:#8b5cf6;"></i>
+            <span>Automation & Leech Group Configuration</span>
+        </h4>
+        <form id="predvd-settings-form" onsubmit="savePreDVDSettings(event)" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:1rem;">
+            <div>
+                <label style="display:block; font-size:0.8rem; color:var(--text-sec); margin-bottom:4px;">Target Leech Group ID</label>
+                <input type="text" id="predvd-set-group-id" value="-1002695497393" class="input" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:0.85rem;" required>
+            </div>
+            <div>
+                <label style="display:block; font-size:0.8rem; color:var(--text-sec); margin-bottom:4px;">Leech Command Prefix</label>
+                <input type="text" id="predvd-set-cmd-prefix" value="/qbleech@AmitPremium_leechbot" class="input" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:0.85rem;" required>
+            </div>
+            <div>
+                <label style="display:block; font-size:0.8rem; color:var(--text-sec); margin-bottom:4px;">Min File Size Limit (MB)</label>
+                <input type="number" id="predvd-set-min-size" value="1000" class="input" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:0.85rem;" required>
+                <span style="font-size:0.7rem; color:var(--text-sec);">Files below 1000 MB (1GB) are ignored</span>
+            </div>
+            <div>
+                <label style="display:block; font-size:0.8rem; color:var(--text-sec); margin-bottom:4px;">Max Qualities / Files per Movie</label>
+                <input type="number" id="predvd-set-max-files" value="2" class="input" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:0.85rem;" required>
+                <span style="font-size:0.7rem; color:var(--text-sec);">Top qualities selected (e.g. 1080p & 720p)</span>
+            </div>
+            <div style="grid-column: 1 / -1; display:flex; gap:1.5rem; flex-wrap:wrap; padding-top:0.5rem; border-top:1px solid var(--border);">
+                <label style="display:flex; align-items:center; gap:8px; font-size:0.85rem; cursor:pointer;">
+                    <input type="checkbox" id="predvd-set-enabled" checked>
+                    <span>Auto-Leech Enabled (Monitors feed every 15m)</span>
+                </label>
+                <label style="display:flex; align-items:center; gap:8px; font-size:0.85rem; cursor:pointer;">
+                    <input type="checkbox" id="predvd-set-auto-purge" checked>
+                    <span>Auto-Purge old PreDVD from Stremio when WEB-DL / HD arrives</span>
+                </label>
+            </div>
+            <div style="grid-column: 1 / -1; text-align:right;">
+                <button type="submit" class="btn btn-primary" style="background:#8b5cf6; border-color:#7c3aed; padding:0.4rem 1.2rem; font-size:0.85rem;"><i class="fa-solid fa-floppy-disk"></i> Save PreDVD Settings</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Discovered Feed Table -->
+    <div style="margin-bottom:1.5rem;">
+        <h4 style="font-size:0.95rem; font-weight:600; margin-bottom:0.75rem; display:flex; justify-content:space-between; align-items:center;">
+            <span><i class="fa-solid fa-list" style="color:#0ea5e9;"></i> Live PreDVD Movies in Feed</span>
+            <span id="predvd-feed-status-badge" style="font-size:0.75rem; font-weight:normal; color:var(--text-sec);">Loading feed...</span>
+        </h4>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:50px;">Poster</th>
+                        <th>Movie Title</th>
+                        <th>Languages</th>
+                        <th>Available Qualities (&ge; 1GB)</th>
+                        <th>Feed Status</th>
+                        <th style="text-align:right;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="predvd-feed-tbody">
+                    <tr><td colspan="6" style="text-align:center; padding:2rem;">Loading 1TamilMV feed...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Leech History Table -->
+    <div>
+        <h4 style="font-size:0.95rem; font-weight:600; margin-bottom:0.75rem;"><i class="fa-solid fa-clock-rotate-left" style="color:#f59e0b;"></i> Leech & Auto-Purge History</h4>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date & Time</th>
+                        <th>Action</th>
+                        <th>Movie Title</th>
+                        <th>Details</th>
+                    </tr>
+                </thead>
+                <tbody id="predvd-history-tbody">
+                    <tr><td colspan="4" style="text-align:center; padding:1.5rem;">No history records yet</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
 </div>
 
 <!-- Health Dashboard View -->
@@ -404,10 +530,12 @@ function switchView(viewName) {
     document.getElementById('view-catalog').style.display = 'none';
     document.getElementById('view-meta-files').style.display = 'none';
     document.getElementById('view-health').style.display = 'none';
+    document.getElementById('view-predvd').style.display = 'none';
     
     document.getElementById('tab-dash').classList.replace('btn-primary', 'btn-ghost');
     document.getElementById('tab-channels').classList.replace('btn-primary', 'btn-ghost');
     document.getElementById('tab-unidx').classList.replace('btn-primary', 'btn-ghost');
+    document.getElementById('tab-predvd').classList.replace('btn-primary', 'btn-ghost');
     
     if (viewName === 'dashboard') {
         document.getElementById(`view-dashboard`).style.display = 'block';
@@ -429,6 +557,11 @@ function switchView(viewName) {
         document.getElementById(`view-health`).style.display = 'block';
         loadHealth();
         currentActiveCallback = loadHealth;
+    } else if (viewName === 'predvd') {
+        document.getElementById(`view-predvd`).style.display = 'block';
+        document.getElementById('tab-predvd').classList.replace('btn-ghost', 'btn-primary');
+        loadPreDVD();
+        currentActiveCallback = loadPreDVD;
     } else {
         document.getElementById(`view-${viewName}`).style.display = 'block';
     }
@@ -1343,6 +1476,214 @@ async function loadHealth() {
     } catch (e) {
         console.error('loadHealth', e);
         document.getElementById('health-overview').innerHTML = `<div class="stat-card"><div class="stat-val" style="color:#ef4444;">ERROR</div><div class="stat-lbl">${escapeHtml(String(e))}</div></div>`;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PreDVD Auto-Leecher JavaScript Handlers
+// ---------------------------------------------------------------------------
+
+let cachedPreDVDSettings = null;
+
+async function loadPreDVD() {
+    try {
+        const [statusRes, feedRes, historyRes] = await Promise.all([
+            fetch('/api/admin/global/predvd/status').then(r => r.json()),
+            fetch('/api/admin/global/predvd/feed').then(r => r.json()),
+            fetch('/api/admin/global/predvd/history').then(r => r.json()),
+        ]);
+
+        // Status & Baseline
+        const s = statusRes.settings || {};
+        cachedPreDVDSettings = s;
+        document.getElementById('predvd-set-group-id').value = s.group_id || '-1002695497393';
+        document.getElementById('predvd-set-cmd-prefix').value = s.command_prefix || '/qbleech@AmitPremium_leechbot';
+        document.getElementById('predvd-set-min-size').value = s.min_size_mb || 1000;
+        document.getElementById('predvd-set-max-files').value = s.max_files_per_movie || 2;
+        document.getElementById('predvd-set-enabled').checked = s.enabled !== false;
+        document.getElementById('predvd-set-auto-purge').checked = s.auto_purge_on_webdl !== false;
+
+        document.getElementById('predvd-stat-status').innerText = s.enabled ? 'Enabled' : 'Disabled';
+        document.getElementById('predvd-stat-status').style.color = s.enabled ? '#22c55e' : '#ef4444';
+        document.getElementById('predvd-stat-baseline').innerText = statusRes.snapshot_count || 0;
+        document.getElementById('predvd-stat-history').innerText = statusRes.history_count || 0;
+        document.getElementById('predvd-stat-feed-count').innerText = feedRes.count || 0;
+
+        document.getElementById('predvd-feed-status-badge').innerText = statusRes.status?.last_check_status || 'Idle';
+
+        // Render Feed Table
+        const feedTbody = document.getElementById('predvd-feed-tbody');
+        const items = feedRes.items || [];
+        if (items.length === 0) {
+            feedTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:2rem; color:var(--text-sec);">No Tamil PreDVD releases currently in feed.</td></tr>';
+        } else {
+            feedTbody.innerHTML = items.map(item => {
+                const poster = item.poster || 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=100';
+                const langs = (item.languages || ['Tamil']).join(', ');
+                const minSize = Number(s.min_size_mb || 1000);
+                
+                // Format qualities >= minSize
+                const eligibleQualities = (item.qualities || []).filter(q => {
+                    const match = String(q.size || '').match(/([\d.]+)\s*(GB|MB|GiB|MiB)/i);
+                    if (!match) return false;
+                    const val = parseFloat(match[1]);
+                    const mb = match[2].toUpperCase().includes('GB') ? val * 1024 : val;
+                    return mb >= minSize && String(q.url || '').startsWith('magnet:');
+                });
+
+                const qualityBadges = eligibleQualities.map(q => 
+                    `<span class="badge" style="background:rgba(244,63,94,0.15); color:#f43f5e; border:1px solid rgba(244,63,94,0.3); font-size:0.75rem; margin-right:4px;">${escapeHtml(q.quality || 'PreDVD')} (${q.size || '1GB+'})</span>`
+                ).join('') || '<span style="font-size:0.75rem; color:var(--text-sec);">No qualities &ge; ' + minSize + 'MB</span>';
+
+                let statusBadge = '<span class="badge" style="background:#0ea5e9; color:white;">New - Eligible</span>';
+                if (item.is_baseline) {
+                    statusBadge = '<span class="badge" style="background:rgba(255,255,255,0.1); color:var(--text-sec);">Baseline (Ignored)</span>';
+                } else if (item.leeched) {
+                    statusBadge = '<span class="badge" style="background:#22c55e; color:white;">Leeched ✓</span>';
+                }
+
+                const bestMagnet = eligibleQualities[0]?.url || item.qualities?.[0]?.url || '';
+                const bestQuality = eligibleQualities[0]?.quality || 'PreDVD';
+
+                const actionBtn = bestMagnet ? `
+                    <button onclick="manualLeech('${escapeHtml(item.title)}', '${encodeURIComponent(bestMagnet)}', '${escapeHtml(bestQuality)}')" class="btn btn-primary" style="background:#f43f5e; border-color:#e11d48; padding:3px 8px; font-size:0.75rem;">
+                        <i class="fa-solid fa-cloud-arrow-down"></i> Leech
+                    </button>
+                ` : '—';
+
+                return `
+                    <tr>
+                        <td><img src="${poster}" style="width:36px; height:52px; object-fit:cover; border-radius:4px; background:var(--bg);" onerror="this.src='https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=100'"></td>
+                        <td><strong>${escapeHtml(item.title || 'Untitled')}</strong> <span style="font-size:0.8rem; color:var(--text-sec);">(${item.year || '2026'})</span></td>
+                        <td><span style="font-size:0.8rem;">${escapeHtml(langs)}</span></td>
+                        <td>${qualityBadges}</td>
+                        <td>${statusBadge}</td>
+                        <td style="text-align:right;">${actionBtn}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        // Render History Table
+        const historyTbody = document.getElementById('predvd-history-tbody');
+        const history = historyRes.history || [];
+        if (history.length === 0) {
+            historyTbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:1.5rem; color:var(--text-sec);">No leech or purge actions performed yet.</td></tr>';
+        } else {
+            historyTbody.innerHTML = history.map(h => {
+                const dateStr = h.timestamp ? new Date(h.timestamp * 1000).toLocaleString() : '—';
+                const isPurge = h.action === 'purged_predvd';
+                const badge = isPurge 
+                    ? '<span class="badge" style="background:#eab308; color:black; font-weight:600;"><i class="fa-solid fa-broom"></i> PreDVD Purged (HD Arrived)</span>'
+                    : '<span class="badge" style="background:#22c55e; color:white; font-weight:600;"><i class="fa-solid fa-paper-plane"></i> Leech Sent</span>';
+                
+                let details = '—';
+                if (isPurge) {
+                    details = `Removed ${h.files_removed || 0} old PreDVD streams from Stremio`;
+                } else if (h.qualities && h.qualities.length > 0) {
+                    details = h.qualities.map(q => `${q.quality || 'PreDVD'} (${q.size_str || ''})`).join(' + ');
+                }
+
+                return `
+                    <tr>
+                        <td style="font-size:0.8rem; color:var(--text-sec);">${dateStr}</td>
+                        <td>${badge}</td>
+                        <td><strong>${escapeHtml(h.title || '—')}</strong></td>
+                        <td style="font-size:0.85rem;">${escapeHtml(details)}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+    } catch (e) {
+        console.error('loadPreDVD error:', e);
+    }
+}
+
+async function savePreDVDSettings(e) {
+    e.preventDefault();
+    const payload = {
+        group_id: document.getElementById('predvd-set-group-id').value.trim(),
+        command_prefix: document.getElementById('predvd-set-cmd-prefix').value.trim(),
+        min_size_mb: parseInt(document.getElementById('predvd-set-min-size').value, 10),
+        max_files_per_movie: parseInt(document.getElementById('predvd-set-max-files').value, 10),
+        enabled: document.getElementById('predvd-set-enabled').checked,
+        auto_purge_on_webdl: document.getElementById('predvd-set-auto-purge').checked,
+    };
+
+    try {
+        const res = await fetch('/api/admin/global/predvd/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.ok) {
+            showNotification('PreDVD Settings saved successfully!', 'success');
+            loadPreDVD();
+        } else {
+            showNotification('Failed to save settings: ' + (data.detail || 'Unknown error'), 'error');
+        }
+    } catch (err) {
+        showNotification('Network error saving settings', 'error');
+    }
+}
+
+async function syncPreDVDFeed() {
+    showNotification('Checking 1TamilMV feed for new PreDVDs...', 'info');
+    try {
+        const res = await fetch('/api/admin/global/predvd/sync', { method: 'POST' });
+        const data = await res.json();
+        if (data.ok) {
+            const r = data.result || {};
+            showNotification(`Feed check complete: ${r.leeched || 0} leeched, ${r.purged || 0} PreDVDs purged.`, 'success');
+            loadPreDVD();
+        } else {
+            showNotification('Feed check failed', 'error');
+        }
+    } catch (e) {
+        showNotification('Network error checking feed', 'error');
+    }
+}
+
+async function resetBaseline() {
+    if (!confirm('This will mark ALL currently listed movies in the feed as BASELINE and ignore them. Only newly released PreDVDs after this moment will be leeched. Continue?')) {
+        return;
+    }
+    showNotification('Resetting baseline snapshot...', 'info');
+    try {
+        const res = await fetch('/api/admin/global/predvd/reset-baseline', { method: 'POST' });
+        const data = await res.json();
+        if (data.ok) {
+            showNotification(data.message || 'Baseline reset!', 'success');
+            loadPreDVD();
+        }
+    } catch (e) {
+        showNotification('Reset failed', 'error');
+    }
+}
+
+async function manualLeech(title, encodedMagnet, quality) {
+    const magnet_url = decodeURIComponent(encodedMagnet);
+    if (!confirm(`Send leech command for '${title}' (${quality}) to your group?`)) {
+        return;
+    }
+    showNotification(`Sending leech command for ${title}...`, 'info');
+    try {
+        const res = await fetch('/api/admin/global/predvd/manual-leech', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title, magnet_url, quality })
+        });
+        const data = await res.json();
+        if (data.ok) {
+            showNotification(data.message || 'Leech command sent!', 'success');
+            loadPreDVD();
+        } else {
+            showNotification(data.detail || 'Failed to send leech command', 'error');
+        }
+    } catch (e) {
+        showNotification('Network error sending leech command', 'error');
     }
 }
 
