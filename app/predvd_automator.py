@@ -200,22 +200,46 @@ def select_qualities_for_leech(movie: Dict[str, Any], min_size_mb: int, max_file
     return candidates[:max_files]
 
 
-async def send_leech_command(group_id: str, command_prefix: str, magnet_url: str, title: str, quality: str) -> bool:
+def normalize_chat_id(group_id: str):
+    gid = str(group_id).strip()
+    if gid.startswith("@"):
+        return gid
+    if gid.startswith("-100"):
+        return int(gid)
+    if gid.lstrip("-").isdigit():
+        clean_num = gid.lstrip("-")
+        if len(clean_num) >= 9 and not clean_num.startswith("100"):
+            return int(f"-100{clean_num}")
+        return int(gid if gid.startswith("-") else f"-100{gid}")
+    return gid
+
+
+async def send_leech_command(group_id: str, command_prefix: str, magnet_url: str, title: str, quality: str) -> tuple[bool, str]:
     """Sends `/qbleech@AmitPremium_leechbot <magnet>` to the target Leech Group."""
     if not client_mod.is_connected():
-        LOGGER.warning("[PREDVD] Cannot send leech command: Userbot is disconnected.")
-        return False
+        try:
+            await client_mod.ensure_started()
+        except Exception as exc:
+            err_msg = f"Userbot is disconnected ({exc})"
+            LOGGER.error("[PREDVD] %s", err_msg)
+            return False, err_msg
+
+    if not client_mod.is_connected() or not client_mod.client:
+        err_msg = "Userbot is disconnected. Please check SESSION_STRING in settings."
+        LOGGER.warning("[PREDVD] %s", err_msg)
+        return False, err_msg
 
     try:
-        chat_target = int(group_id) if group_id.startswith("-100") or group_id.lstrip('-').isdigit() else group_id
+        chat_target = normalize_chat_id(group_id)
         cmd_text = f"{command_prefix.strip()} {magnet_url.strip()}"
         
         msg = await client_mod.client.send_message(chat_id=chat_target, text=cmd_text)
         LOGGER.info("[PREDVD LEECH SENT] '%s' (%s) -> Group %s (Message ID: %s)", title, quality, group_id, msg.id)
-        return True
+        return True, f"Sent to {group_id} (Msg #{msg.id})"
     except Exception as exc:
-        LOGGER.error("[PREDVD] Failed to send leech command for '%s': %s", title, exc)
-        return False
+        err_msg = f"Telegram error: {exc}"
+        LOGGER.error("[PREDVD] Failed to send leech command for '%s' to %s: %s", title, group_id, exc)
+        return False, err_msg
 
 
 async def purge_old_predvd_from_stremio(title: str, imdb_id: Optional[str] = None) -> int:
@@ -348,7 +372,7 @@ async def process_feed_iteration() -> Dict[str, Any]:
 
         sent_qualities = []
         for q in selected_qualities:
-            success = await send_leech_command(
+            success, info = await send_leech_command(
                 group_id=group_id,
                 command_prefix=command_prefix,
                 magnet_url=q["magnet_url"],
@@ -356,6 +380,7 @@ async def process_feed_iteration() -> Dict[str, Any]:
                 quality=q["quality"]
             )
             if success:
+                q["info"] = info
                 sent_qualities.append(q)
                 # Polite spacing between commands to prevent Telegram FloodWait
                 await asyncio.sleep(8.0)

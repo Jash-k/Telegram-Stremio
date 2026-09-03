@@ -703,13 +703,13 @@ async def trigger_manual_leech(request: Request):
     quality = (body.get("quality") or "PreDVD").strip()
 
     if not magnet_url.startswith("magnet:"):
-        raise HTTPException(status_code=400, detail="Invalid magnet URL")
+        raise HTTPException(status_code=400, detail="Invalid magnet URL (must start with magnet:)")
 
     settings = await predvd_automator.get_settings()
     group_id = settings.get("group_id", "-1002695497393")
     command_prefix = settings.get("command_prefix", "/qbleech@AmitPremium_leechbot")
 
-    success = await predvd_automator.send_leech_command(
+    success, msg_info = await predvd_automator.send_leech_command(
         group_id=group_id,
         command_prefix=command_prefix,
         magnet_url=magnet_url,
@@ -717,15 +717,16 @@ async def trigger_manual_leech(request: Request):
         quality=quality
     )
     if not success:
-        raise HTTPException(status_code=500, detail="Failed to send leech command via userbot")
+        raise HTTPException(status_code=400, detail=msg_info)
 
     await db.col("predvd_history").insert_one({
         "action": "manual_leech_sent",
         "title": title,
         "quality": quality,
         "magnet_url": magnet_url,
-        "timestamp": time.time()
+        "timestamp": time.time(),
+        "info": msg_info
     })
 
-    return {"ok": True, "message": f"Leech command sent for {title}!"}
+    return {"ok": True, "message": f"Leech command sent for {title}! ({msg_info})"}
 

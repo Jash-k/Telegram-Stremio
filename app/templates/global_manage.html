@@ -1480,10 +1480,42 @@ async function loadHealth() {
 }
 
 // ---------------------------------------------------------------------------
+// PreDVD Auto-Leecher Toast & Notification Helper
+// ---------------------------------------------------------------------------
+
+function showNotification(msg, type = 'info') {
+    let container = document.getElementById('toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        container.style.cssText = 'position:fixed; top:20px; right:20px; z-index:9999; display:flex; flex-direction:column; gap:8px; pointer-events:none;';
+        document.body.appendChild(container);
+    }
+    const toast = document.createElement('div');
+    const bg = type === 'success' ? '#16a34a' : type === 'error' ? '#dc2626' : '#4f46e5';
+    toast.style.cssText = `background:${bg}; color:white; padding:10px 16px; border-radius:8px; font-size:0.85rem; font-weight:600; box-shadow:0 10px 25px rgba(0,0,0,0.3); opacity:0; transform:translateY(-10px); transition:all 0.25s ease; pointer-events:auto; display:flex; align-items:center; gap:8px; max-width:360px;`;
+    const icon = type === 'success' ? 'fa-circle-check' : type === 'error' ? 'fa-triangle-exclamation' : 'fa-circle-info';
+    toast.innerHTML = `<i class="fa-solid ${icon}"></i> <span>${escapeHtml(msg)}</span>`;
+    container.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '1';
+        toast.style.transform = 'translateY(0)';
+    }, 10);
+
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(-10px)';
+        setTimeout(() => toast.remove(), 250);
+    }, 4000);
+}
+
+// ---------------------------------------------------------------------------
 // PreDVD Auto-Leecher JavaScript Handlers
 // ---------------------------------------------------------------------------
 
 let cachedPreDVDSettings = null;
+window.__predvdFeedItems = [];
 
 async function loadPreDVD() {
     try {
@@ -1514,10 +1546,12 @@ async function loadPreDVD() {
         // Render Feed Table
         const feedTbody = document.getElementById('predvd-feed-tbody');
         const items = feedRes.items || [];
+        window.__predvdFeedItems = items;
+
         if (items.length === 0) {
             feedTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:2rem; color:var(--text-sec);">No Tamil PreDVD releases currently in feed.</td></tr>';
         } else {
-            feedTbody.innerHTML = items.map(item => {
+            feedTbody.innerHTML = items.map((item, idx) => {
                 const poster = item.poster || 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=100';
                 const langs = (item.languages || ['Tamil']).join(', ');
                 const minSize = Number(s.min_size_mb || 1000);
@@ -1545,8 +1579,9 @@ async function loadPreDVD() {
                 const bestMagnet = eligibleQualities[0]?.url || item.qualities?.[0]?.url || '';
                 const bestQuality = eligibleQualities[0]?.quality || 'PreDVD';
 
+                const btnId = `btn-leech-${idx}`;
                 const actionBtn = bestMagnet ? `
-                    <button onclick="manualLeech('${escapeHtml(item.title)}', '${encodeURIComponent(bestMagnet)}', '${escapeHtml(bestQuality)}')" class="btn btn-primary" style="background:#f43f5e; border-color:#e11d48; padding:3px 8px; font-size:0.75rem;">
+                    <button id="${btnId}" onclick="triggerManualLeechByIndex(${idx}, '${btnId}')" class="btn btn-primary" style="background:#f43f5e; border-color:#e11d48; padding:3px 10px; font-size:0.75rem; white-space:nowrap;">
                         <i class="fa-solid fa-cloud-arrow-down"></i> Leech
                     </button>
                 ` : '—';
@@ -1582,6 +1617,8 @@ async function loadPreDVD() {
                     details = `Removed ${h.files_removed || 0} old PreDVD streams from Stremio`;
                 } else if (h.qualities && h.qualities.length > 0) {
                     details = h.qualities.map(q => `${q.quality || 'PreDVD'} (${q.size_str || ''})`).join(' + ');
+                } else if (h.info) {
+                    details = h.info;
                 }
 
                 return `
@@ -1597,6 +1634,7 @@ async function loadPreDVD() {
 
     } catch (e) {
         console.error('loadPreDVD error:', e);
+        showNotification('Failed to load PreDVD data: ' + e.message, 'error');
     }
 }
 
@@ -1639,7 +1677,7 @@ async function syncPreDVDFeed() {
             showNotification(`Feed check complete: ${r.leeched || 0} leeched, ${r.purged || 0} PreDVDs purged.`, 'success');
             loadPreDVD();
         } else {
-            showNotification('Feed check failed', 'error');
+            showNotification('Feed check failed: ' + (data.detail || 'Unknown error'), 'error');
         }
     } catch (e) {
         showNotification('Network error checking feed', 'error');
@@ -1655,20 +1693,56 @@ async function resetBaseline() {
         const res = await fetch('/api/admin/global/predvd/reset-baseline', { method: 'POST' });
         const data = await res.json();
         if (data.ok) {
-            showNotification(data.message || 'Baseline reset!', 'success');
+            showNotification(data.message || 'Baseline reset successfully!', 'success');
             loadPreDVD();
+        } else {
+            showNotification(data.detail || 'Reset failed', 'error');
         }
     } catch (e) {
-        showNotification('Reset failed', 'error');
+        showNotification('Reset failed: ' + e.message, 'error');
     }
 }
 
-async function manualLeech(title, encodedMagnet, quality) {
-    const magnet_url = decodeURIComponent(encodedMagnet);
-    if (!confirm(`Send leech command for '${title}' (${quality}) to your group?`)) {
+async function triggerManualLeechByIndex(idx, btnId) {
+    const item = window.__predvdFeedItems?.[idx];
+    if (!item) {
+        showNotification('Movie data not found', 'error');
         return;
     }
+
+    const minSize = Number(cachedPreDVDSettings?.min_size_mb || 1000);
+    const eligibleQualities = (item.qualities || []).filter(q => {
+        const match = String(q.size || '').match(/([\d.]+)\s*(GB|MB|GiB|MiB)/i);
+        if (!match) return false;
+        const val = parseFloat(match[1]);
+        const mb = match[2].toUpperCase().includes('GB') ? val * 1024 : val;
+        return mb >= minSize && String(q.url || '').startsWith('magnet:');
+    });
+
+    const magnet_url = eligibleQualities[0]?.url || item.qualities?.[0]?.url;
+    const quality = eligibleQualities[0]?.quality || item.qualities?.[0]?.quality || 'PreDVD';
+    const title = item.title || 'Untitled';
+
+    if (!magnet_url) {
+        showNotification('No valid magnet link found for this title', 'error');
+        return;
+    }
+
+    const targetGroup = document.getElementById('predvd-set-group-id')?.value || '-1002695497393';
+    const cmdPrefix = document.getElementById('predvd-set-cmd-prefix')?.value || '/qbleech@AmitPremium_leechbot';
+
+    if (!confirm(`Send leech command for '${title}' (${quality}) to Telegram Group ${targetGroup}?\n\nCommand: ${cmdPrefix} <magnet>`)) {
+        return;
+    }
+
+    const btn = document.getElementById(btnId);
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Sending...';
+    }
+
     showNotification(`Sending leech command for ${title}...`, 'info');
+
     try {
         const res = await fetch('/api/admin/global/predvd/manual-leech', {
             method: 'POST',
@@ -1676,14 +1750,29 @@ async function manualLeech(title, encodedMagnet, quality) {
             body: JSON.stringify({ title, magnet_url, quality })
         });
         const data = await res.json();
-        if (data.ok) {
-            showNotification(data.message || 'Leech command sent!', 'success');
-            loadPreDVD();
+        if (res.ok && data.ok) {
+            showNotification(data.message || 'Leech command sent to Telegram group!', 'success');
+            if (btn) {
+                btn.style.background = '#22c55e';
+                btn.style.borderColor = '#16a34a';
+                btn.innerHTML = '<i class="fa-solid fa-check"></i> Sent ✓';
+            }
+            setTimeout(loadPreDVD, 1500);
         } else {
-            showNotification(data.detail || 'Failed to send leech command', 'error');
+            const err = data.detail || data.message || 'Failed to send command to Telegram group';
+            showNotification(err, 'error');
+            alert('Leech Error: ' + err);
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Retry';
+            }
         }
-    } catch (e) {
-        showNotification('Network error sending leech command', 'error');
+    } catch (err) {
+        showNotification('Network error: ' + err.message, 'error');
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Leech';
+        }
     }
 }
 
