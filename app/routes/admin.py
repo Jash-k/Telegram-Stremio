@@ -651,24 +651,26 @@ async def update_predvd_settings(request: Request):
 @router.get("/predvd/feed", dependencies=[Depends(require_auth)])
 async def get_predvd_feed():
     from app import predvd_automator
-    feed_items = await predvd_automator.fetch_feed()
+    settings = await predvd_automator.get_settings()
+    feed_items = await predvd_automator.fetch_feed(settings.get("feed_url"))
     tamil_predvds = []
     for m in feed_items:
         if predvd_automator.is_tamil_release(m) and predvd_automator.is_predvd_release(m):
             key = m.get("imdbId") or m.get("name") or m.get("titleGuess") or m.get("rawTitle")
             snapshot_doc = await db.col("predvd_snapshot").find_one({"_id": key}) if key else None
             tamil_predvds.append({
-                "title": m.get("name") or m.get("titleGuess") or m.get("rawTitle"),
-                "year": m.get("year") or m.get("yearGuess"),
-                "imdb_id": m.get("imdbId"),
-                "poster": m.get("poster") or m.get("thumbnail"),
+                "title": m.get("name") or m.get("titleGuess") or m.get("rawTitle") or "Untitled",
+                "year": m.get("year") or m.get("yearGuess") or 2026,
+                "imdb_id": m.get("imdbId") or "",
+                "poster": m.get("poster") or m.get("thumbnail") or "",
                 "languages": m.get("languages") or ["Tamil"],
                 "qualities": m.get("qualities") or [],
+                "page_url": m.get("pageUrl") or "",
                 "is_baseline": bool(snapshot_doc and snapshot_doc.get("is_baseline")),
                 "leeched": bool(snapshot_doc and snapshot_doc.get("leeched")),
-                "raw_text": m.get("rawText") or "",
+                "raw_text": m.get("rawText") or m.get("rawTitle") or "",
             })
-    return {"ok": True, "count": len(tamil_predvds), "items": tamil_predvds}
+    return {"ok": True, "count": len(tamil_predvds), "total_scraped": len(feed_items), "items": tamil_predvds}
 
 
 @router.get("/predvd/history", dependencies=[Depends(require_auth)])

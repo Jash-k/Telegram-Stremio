@@ -10,11 +10,25 @@ Monitors 1TamilMV movies.json feed for NEW Tamil PreDVD releases and:
 import asyncio
 import re
 import time
+import urllib.parse
 from typing import Optional, List, Dict, Any
 import httpx
 
 from app import client as client_mod, config, db
 from app.logger import LOGGER
+
+def normalize_feed_url(url: str) -> str:
+    """Normalizes GitHub web/blob/raw URLs into raw content URLs."""
+    u = str(url or "").strip()
+    if not u:
+        return ""
+    # Converts https://github.com/user/repo/blob/branch/path -> https://raw.githubusercontent.com/user/repo/branch/path
+    # Converts https://github.com/user/repo/raw/branch/path -> https://raw.githubusercontent.com/user/repo/branch/path
+    match = re.match(r"^https?://github\.com/([^/]+)/([^/]+)/(?:blob|raw)/(.+)$", u)
+    if match:
+        user, repo, path = match.groups()
+        return f"https://raw.githubusercontent.com/{user}/{repo}/{path}"
+    return u
 
 def get_default_settings() -> Dict[str, Any]:
     return {
@@ -29,9 +43,9 @@ def get_default_settings() -> Dict[str, Any]:
         "poll_interval_minutes": getattr(config, "PREDVD_POLL_INTERVAL_MINUTES", 15),
     }
 
-PREDVD_REGEX = re.compile(r'\b(predvd|cam|dvdscr|hdtc|telesync|ts\b|theatrical|early|hq clean)\b', re.IGNORECASE)
-WEBDL_REGEX = re.compile(r'\b(web-dl|webdl|bluray|hdrip|true web|bd-rip|brrip|dvdrip)\b', re.IGNORECASE)
-TAMIL_REGEX = re.compile(r'\b(tamil|multi)\b', re.IGNORECASE)
+PREDVD_REGEX = re.compile(r'\b(predvd|pre[-\s]?dvd|camrip|cam[-\s]?rip|\bcam\b|hdcam|dvdscr|dvd[-\s]?scr|\bscr\b|hdtc|hd[-\s]?tc|hdts|hq[-\s]?ts|telesync|\bts\b|theatrical|theater[-\s]?print|cinema[-\s]?print)\b', re.IGNORECASE)
+WEBDL_REGEX = re.compile(r'\b(web[-\s]?dl|webdl|bluray|blu[-\s]?ray|bd[-\s]?rip|br[-\s]?rip|hd[-\s]?rip|hdrip|hq\s*hdrip|true\s*web|dvd[-\s]?rip|dvdrip|\buhd\b|2160p|web[-\s]?hd)\b', re.IGNORECASE)
+TAMIL_REGEX = re.compile(r'\b(tamil|tam|multi)\b', re.IGNORECASE)
 
 _running = False
 _task: Optional[asyncio.Task] = None
@@ -53,30 +67,30 @@ def parse_size_to_mb(size_str: str) -> float:
 
 
 def is_tamil_release(movie: Dict[str, Any]) -> bool:
-    raw = movie.get("rawText") or movie.get("rawTitle") or movie.get("name") or ""
+    raw = f"{movie.get('rawText', '')} {movie.get('rawTitle', '')} {movie.get('name', '')} {movie.get('titleGuess', '')} {movie.get('pageUrl', '')}"
     languages = movie.get("languages") or []
     lang_str = " ".join(languages) if isinstance(languages, list) else str(languages)
+    for q in (movie.get("qualities") or []):
+        raw += f" {q.get('quality', '')} {q.get('url', '')}"
     return bool(TAMIL_REGEX.search(raw) or TAMIL_REGEX.search(lang_str))
 
 
-def is_predvd_release(movie: Dict[str, Any]) -> bool:
-    raw = movie.get("rawText") or movie.get("rawTitle") or ""
-    if PREDVD_REGEX.search(raw):
-        return True
-    for q in (movie.get("qualities") or []):
-        if PREDVD_REGEX.search(q.get("quality", "")):
-            return True
-    return False
-
-
 def is_webdl_release(movie: Dict[str, Any]) -> bool:
-    raw = movie.get("rawText") or movie.get("rawTitle") or ""
-    if WEBDL_REGEX.search(raw) and not PREDVD_REGEX.search(raw):
-        return True
+    """Returns True if the release is an official digital/HD print (WEB-DL, HDRip, HQ HDRip, BluRay, UHD)."""
+    raw = f"{movie.get('rawText', '')} {movie.get('rawTitle', '')} {movie.get('name', '')} {movie.get('titleGuess', '')} {movie.get('pageUrl', '')}"
     for q in (movie.get("qualities") or []):
-        if WEBDL_REGEX.search(q.get("quality", "")) and not PREDVD_REGEX.search(q.get("quality", "")):
-            return True
-    return False
+        raw += f" {q.get('quality', '')} {q.get('url', '')}"
+    return bool(WEBDL_REGEX.search(raw) and not PREDVD_REGEX.search(raw))
+
+
+def is_predvd_release(movie: Dict[str, Any]) -> bool:
+    """Returns True only if the release is strictly a theatrical/PreDVD/CAM rip (never official digital/HDRip/WEB-DL)."""
+    if is_webdl_release(movie):
+        return False
+    raw = f"{movie.get('rawText', '')} {movie.get('rawTitle', '')} {movie.get('name', '')} {movie.get('titleGuess', '')} {movie.get('pageUrl', '')}"
+    for q in (movie.get("qualities") or []):
+        raw += f" {q.get('quality', '')} {q.get('url', '')}"
+    return bool(PREDVD_REGEX.search(raw))
 
 
 async def get_settings() -> Dict[str, Any]:
@@ -110,18 +124,24 @@ async def save_settings(new_cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def fetch_feed(feed_url: Optional[str] = None) -> List[Dict[str, Any]]:
-    target_url = feed_url or getattr(config, "PREDVD_FEED_URL", "")
+    settings = await get_settings() if not feed_url else {}
+    raw_target = feed_url or settings.get("feed_url") or getattr(config, "PREDVD_FEED_URL", "")
+    target_url = normalize_feed_url(raw_target)
     if not target_url:
         LOGGER.warning("[PREDVD] Feed URL is not configured. Please set PREDVD_FEED_URL in settings or config.env")
         return []
     try:
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            resp = await client.get(target_url)
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
+            resp = await client.get(target_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
             if resp.status_code == 200:
-                return resp.json()
+                data = resp.json()
+                if isinstance(data, list):
+                    return data
+                LOGGER.warning("[PREDVD] Feed returned non-list JSON: %s", type(data))
+                return []
             LOGGER.warning("[PREDVD] Feed fetch failed HTTP %s from %s", resp.status_code, target_url)
     except Exception as exc:
-        LOGGER.error("[PREDVD] Feed fetch exception: %s", exc)
+        LOGGER.error("[PREDVD] Feed fetch exception (%s): %s", target_url, exc)
     return []
 
 

@@ -126,6 +126,11 @@
             <span>Automation & Leech Group Configuration</span>
         </h4>
         <form id="predvd-settings-form" onsubmit="savePreDVDSettings(event)" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:1rem;">
+            <div style="grid-column: 1 / -1;">
+                <label style="display:block; font-size:0.8rem; color:var(--text-sec); margin-bottom:4px;">Scraped Movies Feed URL (Raw movies.json)</label>
+                <input type="url" id="predvd-set-feed-url" placeholder="https://raw.githubusercontent.com/.../main/data/movies.json or GitHub blob URL" class="input" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:0.85rem;">
+                <span style="font-size:0.7rem; color:var(--text-sec);">Supports GitHub raw or blob URLs (e.g. https://github.com/Jash-k/mv_scrapper/blob/main/data/movies.json)</span>
+            </div>
             <div>
                 <label style="display:block; font-size:0.8rem; color:var(--text-sec); margin-bottom:4px;">Target Leech Group ID</label>
                 <input type="text" id="predvd-set-group-id" placeholder="-100... or @group" class="input" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:0.85rem;" required>
@@ -1527,6 +1532,7 @@ async function loadPreDVD() {
         // Status & Baseline
         const s = statusRes.settings || {};
         cachedPreDVDSettings = s;
+        document.getElementById('predvd-set-feed-url').value = s.feed_url || '';
         document.getElementById('predvd-set-group-id').value = s.group_id || '';
         document.getElementById('predvd-set-cmd-prefix').value = s.command_prefix || '';
         document.getElementById('predvd-set-min-size').value = s.min_size_mb !== undefined ? s.min_size_mb : 800;
@@ -1540,7 +1546,8 @@ async function loadPreDVD() {
         document.getElementById('predvd-stat-history').innerText = statusRes.history_count || 0;
         document.getElementById('predvd-stat-feed-count').innerText = feedRes.count || 0;
 
-        document.getElementById('predvd-feed-status-badge').innerText = statusRes.status?.last_check_status || 'Idle';
+        const totalScraped = feedRes.total_scraped || 0;
+        document.getElementById('predvd-feed-status-badge').innerText = `${feedRes.count || 0} Tamil PreDVDs found (${totalScraped} total in feed)`;
 
         // Render Feed Table
         const feedTbody = document.getElementById('predvd-feed-tbody');
@@ -1644,6 +1651,7 @@ async function loadPreDVD() {
 async function savePreDVDSettings(e) {
     e.preventDefault();
     const payload = {
+        feed_url: document.getElementById('predvd-set-feed-url').value.trim(),
         group_id: document.getElementById('predvd-set-group-id').value.trim(),
         command_prefix: document.getElementById('predvd-set-cmd-prefix').value.trim(),
         min_size_mb: parseInt(document.getElementById('predvd-set-min-size').value, 10),
