@@ -82,8 +82,13 @@ async def lifespan(app: FastAPI):
     from app import predvd_automator
     predvd_automator.start()
 
+    # Start Global Indexer Periodic Background Sync loop
+    from app import indexer
+    indexer.start_background_watcher()
+
     yield
 
+    indexer.stop_background_watcher()
     predvd_automator.stop()
     watchdog_task.cancel()
     if keepalive_task:

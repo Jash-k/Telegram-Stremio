@@ -106,7 +106,9 @@ _TAG_RE = re.compile(r"@[A-Za-z0-9_.]+")
 def clean_filename(name: str) -> str:
     if not name:
         return ""
-    name = re.sub(r"https?://[^\s]+", "", name)
+    # Strip markdown [text](url) -> text
+    name = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", name)
+    name = re.sub(r"https?://[^\s\)]+", "", name)
     name = _EMOJI_RE.sub(" ", name)
     name = _TAG_RE.sub(" ", name)
     name = re.sub(r"\s+", " ", name).strip()
@@ -154,6 +156,35 @@ def determine_catalog(details: dict, media_type: str, filename: str) -> str:
         return "dubbed_movies" if media_type == "movie" else "dubbed_series"
     return "other_movies" if media_type == "movie" else "other_series"
 
+
+# ---------------------------------------------------------------------------
+# Fallback title & year extraction (handles short/acronym titles like DC, LEO)
+# ---------------------------------------------------------------------------
+
+_GENERIC_TITLES = {"tamil", "telugu", "hindi", "malayalam", "kannada", "english", "multi", "director's cut", "directors cut", "extended", "remastered", "unrated"}
+
+def extract_fallback_title_and_year(filename: str) -> tuple[Optional[str], Optional[int]]:
+    clean = clean_filename(filename)
+    clean = re.sub(r"\.(?:mkv|mp4|avi|mov|ts|m4v|flv|webm)$", "", clean, flags=re.I)
+    clean = re.sub(r"^(?:www\.)?[a-zA-Z0-9_\-\.]+\.(?:meme|pm|cz|wf|vip|yt|to|org|com|net|in|is|info|pizza|report)[\s._\-]*", "", clean, flags=re.I)
+    clean = re.sub(r"^[\[\(\{][^\]\)\}]+[\]\)\}][\s._\-]*", "", clean)
+    
+    # Check for "Title (YYYY)" or "Title.YYYY" or "Title - YYYY" pattern
+    year_match = re.search(r"[\s._\-\(\[]+(19\d\d|20\d\d)[\s._\-\)\]]*", clean)
+    if year_match:
+        year = int(year_match.group(1))
+        title_part = clean[:year_match.start()].strip(" ._-()[]{}")
+        if title_part:
+            return title_part, year
+            
+    # Pattern 2: Title before quality/codec tags (1080p, 720p, WEBRip, HDRip, etc.)
+    split_match = re.search(r"[\s._\-\(\[]+(?:1080p|720p|2160p|4k|web-?rip|web-?dl|hdrip|bluray|dvd|x264|x265|hevc|h264|tamil|telugu|hindi|malayalam|kannada)[\s._\-\)\]]*", clean, re.I)
+    if split_match:
+        title_part = clean[:split_match.start()].strip(" ._-()[]{}")
+        if title_part:
+            return title_part, None
+            
+    return None, None
 
 # ---------------------------------------------------------------------------
 # GlobalDB queries

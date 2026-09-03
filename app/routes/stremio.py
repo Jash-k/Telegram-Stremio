@@ -347,19 +347,22 @@ async def stream(token: str, media_type: str, id: str):
     streams = []
     async for fdoc in db.col("files").find(query):
         sid = tok.encode_payload({"chat_id": int(fdoc["chat_id"]), "msg_id": int(fdoc["message_id"])})
-        filename = fdoc.get("filename", "")
+        raw_filename = fdoc.get("filename", "")
+        # Clean multi-line caption data from filename for stream title and URL path
+        clean_name = raw_filename.split("\n")[0].strip() or "video.mkv"
+        clean_name = re.sub(r"[\r\n\t]+", " ", clean_name).strip()
         quality = fdoc.get("quality", "HD")
         size = fdoc.get("size_str", "")
         # Pre-computed technical metadata (fast path; no PTN at request time).
         codec = fdoc.get("codec") or ""
         audio = fdoc.get("audio") or ""
         name = f"🌐 GLOBAL {quality}"
-        combined = P.parse_combined_episodes(filename)
+        combined = P.parse_combined_episodes(clean_name)
         if combined:
             label = "Full" if combined.get("start") is None else f"E{combined['start']:02d}-E{combined['end']:02d}"
             if label.lower() not in name.lower():
                 name = f"{name} {label}"
-        title_parts = [f"📁 {filename}", f"💾 {size}"]
+        title_parts = [f"📁 {clean_name}", f"💾 {size}"]
         if codec:
             title_parts.append(f"🎥 {codec}")
         if audio:
@@ -369,10 +372,10 @@ async def stream(token: str, media_type: str, id: str):
         streams.append({
             "name": name,
             "title": title,
-            "url": f"{config.BASE_URL}/dl/{token}/{sid}/{quote(filename)}",
+            "url": f"{config.BASE_URL}/dl/{token}/{sid}/{quote(clean_name)}",
             "size_bytes": _parse_size(size),
             "_res": _resolution_priority(name),
-            "_lang": _language_priority(filename),
+            "_lang": _language_priority(clean_name),
         })
 
     streams.sort(key=lambda s: (s["_lang"], s["_res"], s["size_bytes"]), reverse=True)

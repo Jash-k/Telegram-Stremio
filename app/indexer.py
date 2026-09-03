@@ -20,6 +20,7 @@ from .parser import (
     clean_filename,
     determine_catalog,
     episode_bounds,
+    extract_fallback_title_and_year,
     first_int,
     global_file_key,
     languages_from_filename,
@@ -83,18 +84,26 @@ _CHANNELS_DOC = "channels_config"
 async def configured_channels() -> list[int]:
     """Channels the indexer should track.
 
-    Resolution order: env `CHANNELS` → persisted config (editable in the panel)
-    → auto-derived from existing sync state.
+    Merges env CHANNELS + persisted DB config + existing sync state + indexed files
+    so no channel is ever missed or dropped.
     """
+    ids = set()
     if config.CHANNELS:
-        return resolve_channel_ids(config.CHANNELS)
+        ids.update(resolve_channel_ids(config.CHANNELS))
     doc = await db.col("state").find_one({"_id": _CHANNELS_DOC})
     if doc and doc.get("channels"):
-        return resolve_channel_ids(doc["channels"])
-    ids = set()
+        ids.update(resolve_channel_ids(doc["channels"]))
     async for s in db.col("state").find({"_id": {"$regex": "^sync_"}}):
         try:
             ids.add(int(str(s["_id"]).split("_")[1]))
+        except (ValueError, IndexError):
+            continue
+    async for f in db.col("files").aggregate([{"$group": {"_id": "$chat_id"}}]):
+        try:
+            if f["_id"]:
+                raw_n = int(f["_id"])
+                canon_n = raw_n if raw_n < 0 else int(f"-100{raw_n}")
+                ids.add(canon_n)
         except (ValueError, IndexError):
             continue
     return sorted(ids, key=abs)
@@ -150,14 +159,27 @@ async def _configured_channels() -> list[int]:
 
 
 def video_filename(message):
-    name = None
-    if message.video:
-        name = (message.caption or "").strip() or getattr(message.video, "file_name", None) or "video.mkv"
-    elif message.document:
-        mime = message.document.mime_type or ""
-        doc_name = message.document.file_name
-        if mime.startswith("video/") or (doc_name and doc_name.lower().endswith(_VIDEO_EXTS)):
-            name = (message.caption or "").strip() or doc_name or "video.mkv"
+    media = getattr(message, "video", None) or getattr(message, "document", None) or getattr(message, "animation", None)
+    if not media:
+        return None
+
+    doc_name = getattr(media, "file_name", None) or ""
+    caption = (getattr(message, "caption", None) or getattr(message, "text", None) or "").strip()
+
+    # Prioritize real video file name ending with video extension
+    if doc_name and any(doc_name.lower().endswith(ext) for ext in _VIDEO_EXTS):
+        name = doc_name
+    elif caption and any(ext in caption.lower() for ext in _VIDEO_EXTS):
+        name = caption
+    elif doc_name:
+        name = doc_name
+    elif caption:
+        name = caption
+    elif getattr(message, "video", None):
+        name = "video.mkv"
+    else:
+        name = None
+
     if name:
         return clean_filename(name)
     return None
@@ -322,104 +344,122 @@ async def remove_file_reference(chat_id, message_id) -> int:
 
 
 async def _process_message(chat_id: int, message) -> str | None:
-    filename = video_filename(message)
-    if not filename:
-        return None
-    media = message.video or message.document
-    size = getattr(media, "file_size", 0) or 0
-    file_key = global_file_key(chat_id, message.id)
-
     try:
-        parsed = PTN.parse(filename)
-    except Exception:
-        await log_unindexed(file_key, filename, size, chat_id, message.id, "PTN Parsing Failed")
+        media = getattr(message, "video", None) or getattr(message, "document", None) or getattr(message, "animation", None)
+        if not media:
+            return None
+        
+        file_key = global_file_key(chat_id, message.id)
+        size = getattr(media, "file_size", 0) or 0
+        filename = video_filename(message)
+        if not filename:
+            raw_name = getattr(media, "file_name", None) or getattr(message, "caption", None) or "unnamed_video"
+            await log_unindexed(file_key, raw_name, size, chat_id, message.id, "Non-Video / Unsupported Media Format")
+            return None
+
+        try:
+            parsed = PTN.parse(filename)
+        except Exception:
+            parsed = {}
+
+        title = parsed.get("title")
+        year = parsed.get("year")
+
+        # If PTN failed or parsed a generic language/edition keyword (e.g. DC, Tamil, Director's Cut)
+        generic_words = {"tamil", "telugu", "hindi", "malayalam", "kannada", "english", "multi", "director's cut", "directors cut", "extended", "remastered", "unrated"}
+        if not title or str(title).strip().lower() in generic_words or len(str(title).strip()) < 2:
+            fb_title, fb_year = extract_fallback_title_and_year(filename)
+            if fb_title:
+                title = fb_title
+                if not year and fb_year:
+                    year = fb_year
+
+        if not title:
+            await log_unindexed(file_key, filename, size, chat_id, message.id, "No Title Found", title, year)
+            return None
+
+        combined = parse_combined_episodes(filename)
+        season = first_int(parsed.get("season"))
+        ep_start, ep_end = episode_bounds(parsed.get("episode"))
+        media_type = "series" if (season is not None or ep_start is not None or combined) else "movie"
+        tmdb_type = "tv" if media_type == "series" else "movie"
+
+        res = await tmdb_search(title, tmdb_type, year)
+        if not res and year is not None:
+            res = await tmdb_search(title, tmdb_type, None)
+        if not res:
+            await log_unindexed(file_key, filename, size, chat_id, message.id, "TMDb Match Failed", title, year)
+            return None
+
+        tmdb_id = res["id"]
+        details = await tmdb_details(tmdb_type, tmdb_id)
+        if not details:
+            await log_unindexed(file_key, filename, size, chat_id, message.id, "TMDb Details Failed", title, year)
+            return None
+
+        catalog = determine_catalog(details, media_type, filename)
+        doc_id = f"tmdb:{tmdb_id}"
+        external = details.get("external_ids") or {}
+        imdb_id = external.get("imdb_id")
+        year_number_ = year_number(details, media_type)
+        aliases = [doc_id] + ([imdb_id] if imdb_id else [])
+
+        update_data = {
+            "tmdb_id": int(tmdb_id),
+            "imdb_id": imdb_id,
+            "aliases": aliases,
+            "title": details.get("title") or details.get("name") or "",
+            "year": year_number_,
+            "poster": format_tmdb_image(details.get("poster_path")),
+            "background": format_tmdb_image(details.get("backdrop_path"), "original"),
+            "description": details.get("overview") or "",
+            "media_type": media_type,
+            "catalog": catalog,
+            "genres": [g.get("name") for g in (details.get("genres") or [])],
+            "rating": details.get("vote_average", 0.0),
+            "updated_at": time.time(),
+        }
+
+        languages = languages_from_filename(filename)
+        if details.get("original_language") == "ta" and "Tamil" not in languages:
+            languages.append("Tamil")
+
+        await db.col("meta").update_one(
+            {"_id": doc_id},
+            {"$set": update_data, "$addToSet": {"languages": {"$each": languages}}},
+            upsert=True,
+        )
+
+        old_file = await db.col("files").find_one({"_id": file_key}, {"meta_id": 1})
+        file_data = {
+            "_id": file_key,
+            "meta_id": doc_id,
+            "filename": filename,
+            "size": size,
+            "size_str": readable_size(size),
+            "quality": parsed.get("resolution") or "HD",
+            # Pre-computed technical metadata (no PTN re-parse needed at stream time).
+            "codec": parsed.get("codec") or "",
+            "audio": parsed.get("audio") or "",
+            "resolution": parsed.get("resolution") or "",
+            "chat_id": int(chat_id),
+            "message_id": int(message.id),
+            "season": first_int(combined["season"]) if combined else season,
+            "episode_start": first_int(combined["start"]) if combined else ep_start,
+            "episode_end": first_int(combined["end"]) if combined else ep_end,
+            "indexed_at": time.time(),
+        }
+        await db.col("files").update_one({"_id": file_key}, {"$set": file_data}, upsert=True)
+        await db.col("unindexed").delete_one({"_id": file_key})
+
+        old_meta_id = (old_file or {}).get("meta_id")
+        if old_meta_id and old_meta_id != doc_id:
+            if not await db.col("files").find_one({"meta_id": old_meta_id}, {"_id": 1}):
+                await db.col("meta").delete_one({"_id": old_meta_id})
+        return doc_id
+    except Exception as exc:
+        LOGGER.error(f"[INDEXER] Exception processing message {getattr(message, 'id', '?')} in {chat_id}: {exc}")
         return None
-
-    title = parsed.get("title")
-    year = parsed.get("year")
-    if not title:
-        await log_unindexed(file_key, filename, size, chat_id, message.id, "No Title Found", title, year)
-        return None
-
-    combined = parse_combined_episodes(filename)
-    season = first_int(parsed.get("season"))
-    ep_start, ep_end = episode_bounds(parsed.get("episode"))
-    media_type = "series" if (season is not None or ep_start is not None or combined) else "movie"
-    tmdb_type = "tv" if media_type == "series" else "movie"
-
-    res = await tmdb_search(title, tmdb_type, year)
-    if not res and year is not None:
-        res = await tmdb_search(title, tmdb_type, None)
-    if not res:
-        await log_unindexed(file_key, filename, size, chat_id, message.id, "TMDb Match Failed", title, year)
-        return None
-
-    tmdb_id = res["id"]
-    details = await tmdb_details(tmdb_type, tmdb_id)
-    if not details:
-        await log_unindexed(file_key, filename, size, chat_id, message.id, "TMDb Details Failed", title, year)
-        return None
-
-    catalog = determine_catalog(details, media_type, filename)
-    doc_id = f"tmdb:{tmdb_id}"
-    external = details.get("external_ids") or {}
-    imdb_id = external.get("imdb_id")
-    year_number_ = year_number(details, media_type)
-    aliases = [doc_id] + ([imdb_id] if imdb_id else [])
-
-    update_data = {
-        "tmdb_id": int(tmdb_id),
-        "imdb_id": imdb_id,
-        "aliases": aliases,
-        "title": details.get("title") or details.get("name") or "",
-        "year": year_number_,
-        "poster": format_tmdb_image(details.get("poster_path")),
-        "background": format_tmdb_image(details.get("backdrop_path"), "original"),
-        "description": details.get("overview") or "",
-        "media_type": media_type,
-        "catalog": catalog,
-        "genres": [g.get("name") for g in (details.get("genres") or [])],
-        "rating": details.get("vote_average", 0.0),
-        "updated_at": time.time(),
-    }
-
-    languages = languages_from_filename(filename)
-    if details.get("original_language") == "ta" and "Tamil" not in languages:
-        languages.append("Tamil")
-
-    await db.col("meta").update_one(
-        {"_id": doc_id},
-        {"$set": update_data, "$addToSet": {"languages": {"$each": languages}}},
-        upsert=True,
-    )
-
-    old_file = await db.col("files").find_one({"_id": file_key}, {"meta_id": 1})
-    file_data = {
-        "_id": file_key,
-        "meta_id": doc_id,
-        "filename": filename,
-        "size": size,
-        "size_str": readable_size(size),
-        "quality": parsed.get("resolution") or "HD",
-        # Pre-computed technical metadata (no PTN re-parse needed at stream time).
-        "codec": parsed.get("codec") or "",
-        "audio": parsed.get("audio") or "",
-        "resolution": parsed.get("resolution") or "",
-        "chat_id": int(chat_id),
-        "message_id": int(message.id),
-        "season": first_int(combined["season"]) if combined else season,
-        "episode_start": first_int(combined["start"]) if combined else ep_start,
-        "episode_end": first_int(combined["end"]) if combined else ep_end,
-        "indexed_at": time.time(),
-    }
-    await db.col("files").update_one({"_id": file_key}, {"$set": file_data}, upsert=True)
-    await db.col("unindexed").delete_one({"_id": file_key})
-
-    old_meta_id = (old_file or {}).get("meta_id")
-    if old_meta_id and old_meta_id != doc_id:
-        if not await db.col("files").find_one({"meta_id": old_meta_id}, {"_id": 1}):
-            await db.col("meta").delete_one({"_id": old_meta_id})
-    return doc_id
 
 
 async def _unprocessed(chat_id: int, messages) -> list:
@@ -464,7 +504,10 @@ async def _scan_channel(client, chat_id: int, force_historic: bool, total: dict)
                     for candidate in (batch if force_historic else await _unprocessed(chat_id, batch)):
                         if _stop_requested:
                             break
-                        await _process_message(chat_id, candidate)
+                        try:
+                            await _process_message(chat_id, candidate)
+                        except Exception as p_err:
+                            LOGGER.error(f"[INDEXER] error processing msg {getattr(candidate, 'id', '?')} in {chat_id}: {p_err}")
                         total["processed"] += 1
                     _status["processed"] = total["processed"]
                     await db.col("state").update_one(
@@ -475,7 +518,10 @@ async def _scan_channel(client, chat_id: int, force_historic: bool, total: dict)
                     batch = []
                 if batch and not _stop_requested:
                     for candidate in (batch if force_historic else await _unprocessed(chat_id, batch)):
-                        await _process_message(chat_id, candidate)
+                        try:
+                            await _process_message(chat_id, candidate)
+                        except Exception as p_err:
+                            LOGGER.error(f"[INDEXER] error processing msg {getattr(candidate, 'id', '?')} in {chat_id}: {p_err}")
                         total["processed"] += 1
                     _status["processed"] = total["processed"]
                 if not _stop_requested:
@@ -501,7 +547,10 @@ async def _scan_channel(client, chat_id: int, force_historic: bool, total: dict)
                     if msg.id <= last_id:
                         break
                     highest_seen = max(highest_seen, msg.id)
-                    await _process_message(chat_id, msg)
+                    try:
+                        await _process_message(chat_id, msg)
+                    except Exception as p_err:
+                        LOGGER.error(f"[INDEXER] error processing incremental msg {getattr(msg, 'id', '?')} in {chat_id}: {p_err}")
                     total["processed"] += 1
                     _status["processed"] = total["processed"]
                 if highest_seen > last_id:
@@ -564,3 +613,54 @@ async def _run(force_historic: bool, target_chat_id=None) -> None:
         _stop_requested = False
         _task = None
         _status.update({"running": False, "status": final_status, "stop_requested": False, "current_chat": None, "current_filter": None})
+
+
+# ---------------------------------------------------------------------------
+# Background Periodic Sync Loop
+# ---------------------------------------------------------------------------
+_bg_sync_task: asyncio.Task | None = None
+_bg_sync_stop_event = asyncio.Event()
+
+
+async def _background_sync_loop(interval_seconds: int = 300) -> None:
+    """Periodically syncs all tracked channels in the background every 5 minutes."""
+    LOGGER.info(f"[INDEXER] Global background sync worker started (interval: {interval_seconds}s)")
+    # Initial pause for client bootstrap
+    try:
+        await asyncio.sleep(20)
+    except asyncio.CancelledError:
+        return
+
+    while not _bg_sync_stop_event.is_set():
+        try:
+            if not _running:
+                chans = await configured_channels()
+                if chans:
+                    LOGGER.info(f"[INDEXER] Global background periodic sync cycle running for {len(chans)} channel(s)...")
+                    schedule_index(force_historic=False)
+        except Exception as exc:
+            LOGGER.error(f"[INDEXER] Global background sync worker error: {exc}")
+
+        try:
+            await asyncio.wait_for(_bg_sync_stop_event.wait(), timeout=interval_seconds)
+        except asyncio.TimeoutError:
+            pass
+        except asyncio.CancelledError:
+            break
+
+
+def start_background_watcher(interval_seconds: int = 300) -> None:
+    """Start the Global channel background watcher/sync loop."""
+    global _bg_sync_task, _bg_sync_stop_event
+    if _bg_sync_task is not None and not _bg_sync_task.done():
+        return
+    _bg_sync_stop_event.clear()
+    _bg_sync_task = asyncio.create_task(_background_sync_loop(interval_seconds))
+
+
+def stop_background_watcher() -> None:
+    """Stop the Global channel background watcher/sync loop."""
+    global _bg_sync_task, _bg_sync_stop_event
+    _bg_sync_stop_event.set()
+    if _bg_sync_task and not _bg_sync_task.done():
+        _bg_sync_task.cancel()

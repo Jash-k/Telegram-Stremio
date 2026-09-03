@@ -3,6 +3,7 @@
 Schema-compatible with the existing `dbFyvio` GlobalDB:
     meta, files, unindexed, catalogs, state
 """
+import asyncio
 import time
 
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -44,9 +45,19 @@ async def connect() -> None:
     )
     await _client.admin.command("ping")
     _db = _client[config.DB_NAME]
-    await _ensure_indexes()
-    await _seed_catalogs()
+    asyncio.create_task(_ensure_indexes_and_seed())
     LOGGER.info(f"GlobalDB connected: {config.DB_NAME}")
+
+
+async def _ensure_indexes_and_seed() -> None:
+    try:
+        schema = await _db["state"].find_one({"_id": "schema"})
+        if schema and schema.get("version") == 3:
+            return
+        await _ensure_indexes()
+        await _seed_catalogs()
+    except Exception as exc:
+        LOGGER.warning(f"Background schema check error: {exc}")
 
 
 async def _ensure_indexes() -> None:

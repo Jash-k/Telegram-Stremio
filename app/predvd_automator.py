@@ -13,6 +13,8 @@ import time
 import urllib.parse
 from typing import Optional, List, Dict, Any
 import httpx
+from pymongo import UpdateOne
+from pymongo.errors import BulkWriteError
 
 from app import client as client_mod, config, db
 from app.logger import LOGGER
@@ -152,12 +154,14 @@ async def ensure_baseline_snapshot(feed_items: List[Dict[str, Any]]) -> int:
         return count
 
     LOGGER.info("[PREDVD] Initializing Baseline Snapshot of %d existing feed movies...", len(feed_items))
+    seen_keys = set()
     docs = []
     now = time.time()
     for m in feed_items:
         key = m.get("imdbId") or m.get("name") or m.get("titleGuess") or m.get("rawTitle")
-        if not key:
+        if not key or key in seen_keys:
             continue
+        seen_keys.add(key)
         docs.append({
             "_id": key,
             "title": m.get("name") or m.get("titleGuess") or key,
@@ -170,14 +174,22 @@ async def ensure_baseline_snapshot(feed_items: List[Dict[str, Any]]) -> int:
         })
 
     if docs:
-        await db.col("predvd_snapshot").insert_many(docs, ordered=False)
-        LOGGER.info("[PREDVD] Baseline Snapshot established with %d movies. Pre-existing movies ignored.", len(docs))
+        operations = [
+            UpdateOne({"_id": doc["_id"]}, {"$setOnInsert": doc}, upsert=True)
+            for doc in docs
+        ]
+        try:
+            await db.col("predvd_snapshot").bulk_write(operations, ordered=False)
+            LOGGER.info("[PREDVD] Baseline Snapshot established with %d unique movies. Pre-existing movies ignored.", len(docs))
+        except BulkWriteError as bwe:
+            LOGGER.warning("[PREDVD] BulkWriteError handled gracefully: %s", bwe.details.get("writeErrors", []))
     return len(docs)
 
 
 async def reset_baseline_snapshot() -> int:
     """Manually re-captures current feed as baseline snapshot."""
-    feed_items = await fetch_feed()
+    settings = await get_settings()
+    feed_items = await fetch_feed(settings.get("feed_url"))
     await db.col("predvd_snapshot").delete_many({})
     return await ensure_baseline_snapshot(feed_items)
 

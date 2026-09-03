@@ -147,6 +147,39 @@ async def index_status(_: bool = Depends(require_auth)):
     return status()
 
 
+@router.post("/index/message")
+async def index_single_message(payload: dict, _: bool = Depends(require_auth)):
+    from app.client import client
+    from app.indexer import _process_message
+    
+    if not client:
+        return {"status": "error", "message": "Userbot client is not running."}
+        
+    chat_id = payload.get("chat_id")
+    message_id = payload.get("message_id")
+    
+    if not chat_id or not message_id:
+        return {"status": "error", "message": "chat_id and message_id are required."}
+        
+    try:
+        chat_id = int(chat_id)
+        message_id = int(message_id)
+        msg = await client.get_messages(chat_id, message_id)
+        if not msg:
+            return {"status": "error", "message": f"Message {message_id} not found in chat {chat_id}"}
+            
+        meta_id = await _process_message(chat_id, msg)
+        if meta_id:
+            return {"status": "success", "message": f"Indexed successfully into {meta_id}!", "meta_id": meta_id}
+        else:
+            unidx = await db.col("unindexed").find_one({"_id": f"{chat_id}_{message_id}"})
+            reason = unidx.get("reason", "Unknown reason") if unidx else "No video media detected"
+            return {"status": "unindexed", "message": f"Could not index into catalog: {reason}", "reason": reason}
+    except Exception as exc:
+        LOGGER.error(f"[ADMIN] index_single_message error: {exc}")
+        return {"status": "error", "message": str(exc)}
+
+
 # ---------------------------------------------------------------------------
 # Unindexed queue
 # ---------------------------------------------------------------------------

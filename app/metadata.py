@@ -39,11 +39,34 @@ async def tmdb_search(title: str, media_type: str, year=None) -> Optional[dict]:
     params = {"query": title, "include_adult": "true", "language": "en-US"}
     if media_type == "movie" and year:
         params["year"] = int(year)
+        params["primary_release_year"] = int(year)
     data = await _get(path, params)
-    if not data:
+    results = (data.get("results") or []) if data else []
+    
+    # Fallback 1: try without primary_release_year if year was specified
+    if not results and year:
+        params.pop("primary_release_year", None)
+        data = await _get(path, params)
+        results = (data.get("results") or []) if data else []
+
+    # Fallback 2: try without strict year if still empty
+    if not results and year:
+        params.pop("year", None)
+        params.pop("primary_release_year", None)
+        data = await _get(path, params)
+        results = (data.get("results") or []) if data else []
+
+    if not results:
         return None
-    results = data.get("results") or []
-    return results[0] if results else None
+
+    # Exact title match priority
+    norm_title = str(title).strip().lower()
+    for item in results:
+        t = (item.get("title") or item.get("name") or "").strip().lower()
+        if t == norm_title:
+            return item
+
+    return results[0]
 
 
 async def tmdb_search_multi(title: str, media_type: str, year=None, limit: int = 10) -> list[dict]:
