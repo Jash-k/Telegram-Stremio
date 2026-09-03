@@ -21,7 +21,7 @@ def get_default_settings() -> Dict[str, Any]:
         "enabled": getattr(config, "PREDVD_ENABLED", True),
         "group_id": getattr(config, "PREDVD_GROUP_ID", "-1002695497393"),
         "command_prefix": getattr(config, "PREDVD_COMMAND_PREFIX", "/qbleech@AmitPremium_leechbot"),
-        "feed_url": getattr(config, "PREDVD_FEED_URL", "https://raw.githubusercontent.com/cold-logic5/TMV_Stremio_Addon/refs/heads/main/data/movies.json"),
+        "feed_url": getattr(config, "PREDVD_FEED_URL", "https://raw.githubusercontent.com/Jash-k/mv_scrapper/refs/heads/main/data/movies.json"),
         "min_size_mb": getattr(config, "PREDVD_MIN_SIZE_MB", 800),
         "max_files_per_movie": getattr(config, "PREDVD_MAX_FILES_PER_MOVIE", 1),
         "preferred_quality": "720p AVC",
