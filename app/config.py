@@ -97,12 +97,9 @@ KEEPALIVE_MINUTES = _int("KEEPALIVE_MINUTES", 15)
 # PreDVD Auto-Leecher & Stream Lifecycle Settings
 # ---------------------------------------------------------------------------
 PREDVD_ENABLED = os.getenv("PREDVD_ENABLED", "true").lower() in ("true", "1", "yes")
-PREDVD_GROUP_ID = os.getenv("PREDVD_GROUP_ID", "-1002695497393")
-PREDVD_COMMAND_PREFIX = os.getenv("PREDVD_COMMAND_PREFIX", "/qbleech@AmitPremium_leechbot")
-PREDVD_FEED_URL = os.getenv(
-    "PREDVD_FEED_URL",
-    "https://raw.githubusercontent.com/cold-logic5/TMV_Stremio_Addon/refs/heads/main/data/movies.json"
-)
+PREDVD_GROUP_ID = os.getenv("PREDVD_GROUP_ID", "")
+PREDVD_COMMAND_PREFIX = os.getenv("PREDVD_COMMAND_PREFIX", "/qbleech")
+PREDVD_FEED_URL = os.getenv("PREDVD_FEED_URL", "")
 PREDVD_MIN_SIZE_MB = _int("PREDVD_MIN_SIZE_MB", 800)
 PREDVD_MAX_FILES_PER_MOVIE = _int("PREDVD_MAX_FILES_PER_MOVIE", 1)
 PREDVD_AUTO_PURGE_ON_WEBDL = os.getenv("PREDVD_AUTO_PURGE_ON_WEBDL", "true").lower() in ("true", "1", "yes")

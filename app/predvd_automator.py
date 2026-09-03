@@ -2,8 +2,8 @@
 
 Monitors 1TamilMV movies.json feed for NEW Tamil PreDVD releases and:
 1. Ignores pre-existing releases via a Baseline Snapshot.
-2. Only leeches NEW PreDVD releases (Size >= 1.0 GB, max 2 files per movie).
-3. Sends `/qbleech@AmitPremium_leechbot <magnet>` to group `-1002695497393`.
+2. Only leeches NEW PreDVD releases (Size >= min_size_mb, max_files_per_movie).
+3. Sends `<command_prefix> <magnet>` to configured Telegram Leech Group.
 4. Automatically purges old PreDVD streams from MongoDB when official WEB-DL/HD arrives (without leeching WEB-DL).
 5. Stores all state in dedicated MongoDB collections (predvd_snapshot, predvd_history, predvd_settings).
 """
@@ -19,9 +19,9 @@ from app.logger import LOGGER
 def get_default_settings() -> Dict[str, Any]:
     return {
         "enabled": getattr(config, "PREDVD_ENABLED", True),
-        "group_id": getattr(config, "PREDVD_GROUP_ID", "-1002695497393"),
-        "command_prefix": getattr(config, "PREDVD_COMMAND_PREFIX", "/qbleech@AmitPremium_leechbot"),
-        "feed_url": getattr(config, "PREDVD_FEED_URL", "https://raw.githubusercontent.com/Jash-k/mv_scrapper/refs/heads/main/data/movies.json"),
+        "group_id": getattr(config, "PREDVD_GROUP_ID", ""),
+        "command_prefix": getattr(config, "PREDVD_COMMAND_PREFIX", "/qbleech"),
+        "feed_url": getattr(config, "PREDVD_FEED_URL", ""),
         "min_size_mb": getattr(config, "PREDVD_MIN_SIZE_MB", 800),
         "max_files_per_movie": getattr(config, "PREDVD_MAX_FILES_PER_MOVIE", 1),
         "preferred_quality": "720p AVC",
@@ -110,7 +110,10 @@ async def save_settings(new_cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def fetch_feed(feed_url: Optional[str] = None) -> List[Dict[str, Any]]:
-    target_url = feed_url or getattr(config, "PREDVD_FEED_URL", "https://raw.githubusercontent.com/cold-logic5/TMV_Stremio_Addon/refs/heads/main/data/movies.json")
+    target_url = feed_url or getattr(config, "PREDVD_FEED_URL", "")
+    if not target_url:
+        LOGGER.warning("[PREDVD] Feed URL is not configured. Please set PREDVD_FEED_URL in settings or config.env")
+        return []
     try:
         async with httpx.AsyncClient(timeout=25.0) as client:
             resp = await client.get(target_url)
@@ -223,7 +226,12 @@ def normalize_chat_id(group_id: str):
 
 
 async def send_leech_command(group_id: str, command_prefix: str, magnet_url: str, title: str, quality: str) -> tuple[bool, str]:
-    """Sends `/qbleech@AmitPremium_leechbot <magnet>` to the target Leech Group."""
+    """Sends `<command_prefix> <magnet>` to the target Leech Group."""
+    if not group_id:
+        err_msg = "Leech Group ID is not configured. Please set PREDVD_GROUP_ID in settings or config.env."
+        LOGGER.warning("[PREDVD] %s", err_msg)
+        return False, err_msg
+
     if not client_mod.is_connected():
         try:
             await client_mod.ensure_started()
@@ -324,11 +332,16 @@ async def process_feed_iteration() -> Dict[str, Any]:
     # Ensure baseline snapshot is established
     await ensure_baseline_snapshot(feed_items)
 
-    group_id = settings.get("group_id", "-1002695497393")
-    command_prefix = settings.get("command_prefix", "/qbleech@AmitPremium_leechbot")
-    min_size_mb = int(settings.get("min_size_mb", 1000))
-    max_files = int(settings.get("max_files_per_movie", 2))
+    group_id = settings.get("group_id") or getattr(config, "PREDVD_GROUP_ID", "")
+    command_prefix = settings.get("command_prefix") or getattr(config, "PREDVD_COMMAND_PREFIX", "/qbleech")
+    min_size_mb = int(settings.get("min_size_mb", 800))
+    max_files = int(settings.get("max_files_per_movie", 1))
     auto_purge = settings.get("auto_purge_on_webdl", True)
+
+    if not group_id:
+        _last_check_status = "Leech group not configured (set PREDVD_GROUP_ID)"
+        LOGGER.warning("[PREDVD] Leech Group ID is not configured.")
+        return {"ok": False, "error": "group_not_configured"}
 
     leeched_count = 0
     purged_count = 0
