@@ -173,13 +173,12 @@
                         <th style="width:50px;">Poster</th>
                         <th>Movie Title</th>
                         <th>Languages</th>
-                        <th>Available Qualities (&ge; 1GB)</th>
-                        <th>Feed Status</th>
-                        <th style="text-align:right;">Actions</th>
+                        <th>Click Any Available Quality to Leech Directly</th>
+                        <th style="text-align:right;">Feed Status</th>
                     </tr>
                 </thead>
                 <tbody id="predvd-feed-tbody">
-                    <tr><td colspan="6" style="text-align:center; padding:2rem;">Loading 1TamilMV feed...</td></tr>
+                    <tr><td colspan="5" style="text-align:center; padding:2rem;">Loading 1TamilMV feed...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -1549,25 +1548,40 @@ async function loadPreDVD() {
         window.__predvdFeedItems = items;
 
         if (items.length === 0) {
-            feedTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:2rem; color:var(--text-sec);">No Tamil PreDVD releases currently in feed.</td></tr>';
+            feedTbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:2rem; color:var(--text-sec);">No Tamil PreDVD releases currently in feed.</td></tr>';
         } else {
             feedTbody.innerHTML = items.map((item, idx) => {
                 const poster = item.poster || 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=100';
                 const langs = (item.languages || ['Tamil']).join(', ');
                 const minSize = Number(s.min_size_mb || 1000);
                 
-                // Format qualities >= minSize
-                const eligibleQualities = (item.qualities || []).filter(q => {
-                    const match = String(q.size || '').match(/([\d.]+)\s*(GB|MB|GiB|MiB)/i);
-                    if (!match) return false;
-                    const val = parseFloat(match[1]);
-                    const mb = match[2].toUpperCase().includes('GB') ? val * 1024 : val;
-                    return mb >= minSize && String(q.url || '').startsWith('magnet:');
-                });
+                // All magnet qualities rendered as clickable leech buttons
+                const qualitiesList = (item.qualities || []).filter(q => String(q.url || '').startsWith('magnet:'));
 
-                const qualityBadges = eligibleQualities.map(q => 
-                    `<span class="badge" style="background:rgba(244,63,94,0.15); color:#f43f5e; border:1px solid rgba(244,63,94,0.3); font-size:0.75rem; margin-right:4px;">${escapeHtml(q.quality || 'PreDVD')} (${q.size || '1GB+'})</span>`
-                ).join('') || '<span style="font-size:0.75rem; color:var(--text-sec);">No qualities &ge; ' + minSize + 'MB</span>';
+                const qualityButtons = qualitiesList.map((q, qIdx) => {
+                    const qBtnId = `btn-q-${idx}-${qIdx}`;
+                    const sizeStr = q.size || '';
+                    const match = sizeStr.match(/([\d.]+)\s*(GB|MB|GiB|MiB)/i);
+                    let sizeMb = 0;
+                    if (match) {
+                        const val = parseFloat(match[1]);
+                        sizeMb = match[2].toUpperCase().includes('GB') ? val * 1024 : val;
+                    }
+                    const isLarge = sizeMb >= minSize;
+                    const borderCol = isLarge ? 'rgba(244,63,94,0.4)' : 'rgba(255,255,255,0.12)';
+                    const bgCol = isLarge ? 'rgba(244,63,94,0.15)' : 'rgba(255,255,255,0.05)';
+                    const textCol = isLarge ? '#f43f5e' : 'var(--text-sec)';
+                    const highlightGlow = isLarge ? 'font-weight:700;' : '';
+
+                    return `
+                        <button id="${qBtnId}" onclick="triggerDirectQualityLeech(${idx}, ${qIdx}, '${qBtnId}')" style="display:inline-flex; align-items:center; gap:5px; background:${bgCol}; color:${textCol}; border:1px solid ${borderCol}; border-radius:6px; padding:4px 8px; font-size:0.75rem; ${highlightGlow} cursor:pointer; margin:2px 4px 2px 0; transition:all 0.15s ease;" title="Click to leech this exact ${escapeHtml(q.quality || 'PreDVD')} (${sizeStr}) file">
+                            <i class="fa-solid fa-cloud-arrow-down" style="font-size:0.7rem;"></i>
+                            <span>${escapeHtml(q.quality || 'PreDVD')}</span>
+                            <span style="font-weight:normal; opacity:0.85;">(${sizeStr || 'N/A'})</span>
+                            <span style="font-size:0.68rem; color:#22c55e;">● ${q.seeders || 0}s</span>
+                        </button>
+                    `;
+                }).join('') || '<span style="font-size:0.75rem; color:var(--text-sec);">No magnet links found</span>';
 
                 let statusBadge = '<span class="badge" style="background:#0ea5e9; color:white;">New - Eligible</span>';
                 if (item.is_baseline) {
@@ -1576,24 +1590,13 @@ async function loadPreDVD() {
                     statusBadge = '<span class="badge" style="background:#22c55e; color:white;">Leeched ✓</span>';
                 }
 
-                const bestMagnet = eligibleQualities[0]?.url || item.qualities?.[0]?.url || '';
-                const bestQuality = eligibleQualities[0]?.quality || 'PreDVD';
-
-                const btnId = `btn-leech-${idx}`;
-                const actionBtn = bestMagnet ? `
-                    <button id="${btnId}" onclick="triggerManualLeechByIndex(${idx}, '${btnId}')" class="btn btn-primary" style="background:#f43f5e; border-color:#e11d48; padding:3px 10px; font-size:0.75rem; white-space:nowrap;">
-                        <i class="fa-solid fa-cloud-arrow-down"></i> Leech
-                    </button>
-                ` : '—';
-
                 return `
                     <tr>
                         <td><img src="${poster}" style="width:36px; height:52px; object-fit:cover; border-radius:4px; background:var(--bg);" onerror="this.src='https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=100'"></td>
                         <td><strong>${escapeHtml(item.title || 'Untitled')}</strong> <span style="font-size:0.8rem; color:var(--text-sec);">(${item.year || '2026'})</span></td>
                         <td><span style="font-size:0.8rem;">${escapeHtml(langs)}</span></td>
-                        <td>${qualityBadges}</td>
-                        <td>${statusBadge}</td>
-                        <td style="text-align:right;">${actionBtn}</td>
+                        <td style="line-height:1.8;">${qualityButtons}</td>
+                        <td style="text-align:right;">${statusBadge}</td>
                     </tr>
                 `;
             }).join('');
@@ -1703,58 +1706,56 @@ async function resetBaseline() {
     }
 }
 
-async function triggerManualLeechByIndex(idx, btnId) {
-    const item = window.__predvdFeedItems?.[idx];
+async function triggerDirectQualityLeech(itemIdx, qIdx, btnId) {
+    const item = window.__predvdFeedItems?.[itemIdx];
     if (!item) {
         showNotification('Movie data not found', 'error');
         return;
     }
 
-    const minSize = Number(cachedPreDVDSettings?.min_size_mb || 1000);
-    const eligibleQualities = (item.qualities || []).filter(q => {
-        const match = String(q.size || '').match(/([\d.]+)\s*(GB|MB|GiB|MiB)/i);
-        if (!match) return false;
-        const val = parseFloat(match[1]);
-        const mb = match[2].toUpperCase().includes('GB') ? val * 1024 : val;
-        return mb >= minSize && String(q.url || '').startsWith('magnet:');
-    });
-
-    const magnet_url = eligibleQualities[0]?.url || item.qualities?.[0]?.url;
-    const quality = eligibleQualities[0]?.quality || item.qualities?.[0]?.quality || 'PreDVD';
-    const title = item.title || 'Untitled';
-
-    if (!magnet_url) {
-        showNotification('No valid magnet link found for this title', 'error');
+    const qualitiesList = (item.qualities || []).filter(q => String(q.url || '').startsWith('magnet:'));
+    const q = qualitiesList[qIdx];
+    if (!q || !q.url) {
+        showNotification('Invalid magnet link for selected quality', 'error');
         return;
     }
 
+    const title = item.title || 'Untitled';
+    const qualityLabel = `${q.quality || 'PreDVD'} (${q.size || 'Size N/A'})`;
     const targetGroup = document.getElementById('predvd-set-group-id')?.value || '-1002695497393';
     const cmdPrefix = document.getElementById('predvd-set-cmd-prefix')?.value || '/qbleech@AmitPremium_leechbot';
 
-    if (!confirm(`Send leech command for '${title}' (${quality}) to Telegram Group ${targetGroup}?\n\nCommand: ${cmdPrefix} <magnet>`)) {
+    if (!confirm(`Send leech command to group ${targetGroup}?\n\n🎬 ${title}\n⚡ Quality: ${qualityLabel}\n👥 Seeds: ${q.seeders || 0}\n\nCommand:\n${cmdPrefix} <magnet>`)) {
         return;
     }
 
     const btn = document.getElementById(btnId);
+    let originalHtml = '';
     if (btn) {
+        originalHtml = btn.innerHTML;
         btn.disabled = true;
         btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Sending...';
     }
 
-    showNotification(`Sending leech command for ${title}...`, 'info');
+    showNotification(`Sending leech for ${title} [${qualityLabel}]...`, 'info');
 
     try {
         const res = await fetch('/api/admin/global/predvd/manual-leech', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title, magnet_url, quality })
+            body: JSON.stringify({
+                title: title,
+                magnet_url: q.url,
+                quality: qualityLabel
+            })
         });
         const data = await res.json();
         if (res.ok && data.ok) {
             showNotification(data.message || 'Leech command sent to Telegram group!', 'success');
             if (btn) {
-                btn.style.background = '#22c55e';
-                btn.style.borderColor = '#16a34a';
+                btn.style.background = '#16a34a';
+                btn.style.borderColor = '#22c55e';
+                btn.style.color = '#ffffff';
                 btn.innerHTML = '<i class="fa-solid fa-check"></i> Sent ✓';
             }
             setTimeout(loadPreDVD, 1500);
@@ -1764,14 +1765,14 @@ async function triggerManualLeechByIndex(idx, btnId) {
             alert('Leech Error: ' + err);
             if (btn) {
                 btn.disabled = false;
-                btn.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Retry';
+                btn.innerHTML = originalHtml;
             }
         }
     } catch (err) {
         showNotification('Network error: ' + err.message, 'error');
         if (btn) {
             btn.disabled = false;
-            btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Leech';
+            btn.innerHTML = originalHtml;
         }
     }
 }
