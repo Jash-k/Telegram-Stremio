@@ -128,11 +128,11 @@
         <form id="predvd-settings-form" onsubmit="savePreDVDSettings(event)" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:1rem;">
             <div>
                 <label style="display:block; font-size:0.8rem; color:var(--text-sec); margin-bottom:4px;">Target Leech Group ID</label>
-                <input type="text" id="predvd-set-group-id" value="-1002695497393" class="input" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:0.85rem;" required>
+                <input type="text" id="predvd-set-group-id" placeholder="-100... or @group" class="input" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:0.85rem;" required>
             </div>
             <div>
                 <label style="display:block; font-size:0.8rem; color:var(--text-sec); margin-bottom:4px;">Leech Command Prefix</label>
-                <input type="text" id="predvd-set-cmd-prefix" value="/qbleech@AmitPremium_leechbot" class="input" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:0.85rem;" required>
+                <input type="text" id="predvd-set-cmd-prefix" placeholder="/qbleech@bot" class="input" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:0.85rem;" required>
             </div>
             <div>
                 <label style="display:block; font-size:0.8rem; color:var(--text-sec); margin-bottom:4px;">Min File Size Limit (MB)</label>
@@ -1527,8 +1527,8 @@ async function loadPreDVD() {
         // Status & Baseline
         const s = statusRes.settings || {};
         cachedPreDVDSettings = s;
-        document.getElementById('predvd-set-group-id').value = s.group_id || '-1002695497393';
-        document.getElementById('predvd-set-cmd-prefix').value = s.command_prefix || '/qbleech@AmitPremium_leechbot';
+        document.getElementById('predvd-set-group-id').value = s.group_id || '';
+        document.getElementById('predvd-set-cmd-prefix').value = s.command_prefix || '';
         document.getElementById('predvd-set-min-size').value = s.min_size_mb !== undefined ? s.min_size_mb : 800;
         document.getElementById('predvd-set-max-files').value = s.max_files_per_movie !== undefined ? s.max_files_per_movie : 1;
         document.getElementById('predvd-set-enabled').checked = s.enabled !== false;
@@ -1722,8 +1722,8 @@ async function triggerDirectQualityLeech(itemIdx, qIdx, btnId) {
 
     const title = item.title || 'Untitled';
     const qualityLabel = `${q.quality || 'PreDVD'} (${q.size || 'Size N/A'})`;
-    const targetGroup = document.getElementById('predvd-set-group-id')?.value || '-1002695497393';
-    const cmdPrefix = document.getElementById('predvd-set-cmd-prefix')?.value || '/qbleech@AmitPremium_leechbot';
+    const targetGroup = document.getElementById('predvd-set-group-id')?.value || cachedPreDVDSettings?.group_id || '';
+    const cmdPrefix = document.getElementById('predvd-set-cmd-prefix')?.value || cachedPreDVDSettings?.command_prefix || '';
 
     if (!confirm(`Send leech command to group ${targetGroup}?\n\n🎬 ${title}\n⚡ Quality: ${qualityLabel}\n👥 Seeds: ${q.seeders || 0}\n\nCommand:\n${cmdPrefix} <magnet>`)) {
         return;

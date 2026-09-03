@@ -706,8 +706,8 @@ async def trigger_manual_leech(request: Request):
         raise HTTPException(status_code=400, detail="Invalid magnet URL (must start with magnet:)")
 
     settings = await predvd_automator.get_settings()
-    group_id = settings.get("group_id", "-1002695497393")
-    command_prefix = settings.get("command_prefix", "/qbleech@AmitPremium_leechbot")
+    group_id = settings.get("group_id")
+    command_prefix = settings.get("command_prefix")
 
     success, msg_info = await predvd_automator.send_leech_command(
         group_id=group_id,

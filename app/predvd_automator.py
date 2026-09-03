@@ -13,21 +13,21 @@ import time
 from typing import Optional, List, Dict, Any
 import httpx
 
-from app import client as client_mod, db
+from app import client as client_mod, config, db
 from app.logger import LOGGER
 
-FEED_URL = "https://raw.githubusercontent.com/cold-logic5/TMV_Stremio_Addon/refs/heads/main/data/movies.json"
-
-DEFAULT_SETTINGS = {
-    "enabled": True,
-    "group_id": "-1002695497393",
-    "command_prefix": "/qbleech@AmitPremium_leechbot",
-    "min_size_mb": 800,
-    "max_files_per_movie": 1,
-    "preferred_quality": "720p AVC",
-    "auto_purge_on_webdl": True,
-    "poll_interval_minutes": 15,
-}
+def get_default_settings() -> Dict[str, Any]:
+    return {
+        "enabled": getattr(config, "PREDVD_ENABLED", True),
+        "group_id": getattr(config, "PREDVD_GROUP_ID", "-1002695497393"),
+        "command_prefix": getattr(config, "PREDVD_COMMAND_PREFIX", "/qbleech@AmitPremium_leechbot"),
+        "feed_url": getattr(config, "PREDVD_FEED_URL", "https://raw.githubusercontent.com/cold-logic5/TMV_Stremio_Addon/refs/heads/main/data/movies.json"),
+        "min_size_mb": getattr(config, "PREDVD_MIN_SIZE_MB", 800),
+        "max_files_per_movie": getattr(config, "PREDVD_MAX_FILES_PER_MOVIE", 1),
+        "preferred_quality": "720p AVC",
+        "auto_purge_on_webdl": getattr(config, "PREDVD_AUTO_PURGE_ON_WEBDL", True),
+        "poll_interval_minutes": getattr(config, "PREDVD_POLL_INTERVAL_MINUTES", 15),
+    }
 
 PREDVD_REGEX = re.compile(r'\b(predvd|cam|dvdscr|hdtc|telesync|ts\b|theatrical|early|hq clean)\b', re.IGNORECASE)
 WEBDL_REGEX = re.compile(r'\b(web-dl|webdl|bluray|hdrip|true web|bd-rip|brrip|dvdrip)\b', re.IGNORECASE)
@@ -80,17 +80,19 @@ def is_webdl_release(movie: Dict[str, Any]) -> bool:
 
 
 async def get_settings() -> Dict[str, Any]:
+    defaults = get_default_settings()
     doc = await db.col("predvd_settings").find_one({"_id": "config"})
     if not doc:
-        return dict(DEFAULT_SETTINGS)
-    cfg = dict(DEFAULT_SETTINGS)
+        return defaults
+    cfg = dict(defaults)
     cfg.update({k: v for k, v in doc.items() if k != "_id"})
     return cfg
 
 
 async def save_settings(new_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    defaults = get_default_settings()
     cleaned = {}
-    for k in DEFAULT_SETTINGS:
+    for k in defaults:
         if k in new_cfg:
             if k in ("enabled", "auto_purge_on_webdl"):
                 cleaned[k] = bool(new_cfg[k])
@@ -107,13 +109,14 @@ async def save_settings(new_cfg: Dict[str, Any]) -> Dict[str, Any]:
     return await get_settings()
 
 
-async def fetch_feed() -> List[Dict[str, Any]]:
+async def fetch_feed(feed_url: Optional[str] = None) -> List[Dict[str, Any]]:
+    target_url = feed_url or getattr(config, "PREDVD_FEED_URL", "https://raw.githubusercontent.com/cold-logic5/TMV_Stremio_Addon/refs/heads/main/data/movies.json")
     try:
         async with httpx.AsyncClient(timeout=25.0) as client:
-            resp = await client.get(FEED_URL)
+            resp = await client.get(target_url)
             if resp.status_code == 200:
                 return resp.json()
-            LOGGER.warning("[PREDVD] Feed fetch failed HTTP %s", resp.status_code)
+            LOGGER.warning("[PREDVD] Feed fetch failed HTTP %s from %s", resp.status_code, target_url)
     except Exception as exc:
         LOGGER.error("[PREDVD] Feed fetch exception: %s", exc)
     return []
