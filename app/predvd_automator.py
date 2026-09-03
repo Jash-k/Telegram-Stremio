@@ -22,8 +22,9 @@ DEFAULT_SETTINGS = {
     "enabled": True,
     "group_id": "-1002695497393",
     "command_prefix": "/qbleech@AmitPremium_leechbot",
-    "min_size_mb": 1000,
-    "max_files_per_movie": 2,
+    "min_size_mb": 800,
+    "max_files_per_movie": 1,
+    "preferred_quality": "720p AVC",
     "auto_purge_on_webdl": True,
     "poll_interval_minutes": 15,
 }
@@ -155,7 +156,7 @@ async def reset_baseline_snapshot() -> int:
     return await ensure_baseline_snapshot(feed_items)
 
 
-def select_qualities_for_leech(movie: Dict[str, Any], min_size_mb: int, max_files: int) -> List[Dict[str, Any]]:
+def select_qualities_for_leech(movie: Dict[str, Any], min_size_mb: int = 800, max_files: int = 1) -> List[Dict[str, Any]]:
     qualities = movie.get("qualities") or []
     candidates = []
 
@@ -166,28 +167,32 @@ def select_qualities_for_leech(movie: Dict[str, Any], min_size_mb: int, max_file
         size_str = q.get("size") or ""
         size_mb = parse_size_to_mb(size_str)
         
-        # Rule: Size >= min_size_mb (1000 MB)
-        if size_mb < min_size_mb:
+        # Rule: Size >= min_size_mb
+        if min_size_mb > 0 and size_mb < min_size_mb:
             continue
 
-        q_label = q.get("quality") or ""
+        q_label = (q.get("quality") or "").lower()
         seeders = int(q.get("seeders") or 0)
         
-        # Score by resolution priority (1080p > 720p > others) + seeders
+        # High-Priority Rule: 720p AVC (Maximum quality of 720p)
         score = 0
-        if "1080p" in q_label.lower():
+        if "720p" in q_label and ("avc" in q_label or "x264" in q_label or "h264" in q_label):
+            score += 500  # Highest priority: 720p AVC
+        elif "720p" in q_label:
+            score += 300  # Secondary 720p (e.g. 720p HEVC)
+        elif "1080p" in q_label and ("avc" in q_label or "x264" in q_label):
             score += 100
-        elif "720p" in q_label.lower():
+        elif "1080p" in q_label:
             score += 80
-        elif "4k" in q_label.lower() or "2160p" in q_label.lower():
-            score += 60
         else:
             score += 40
 
-        score += min(seeders, 50)
+        # Prefer higher bitrate / larger size within the target tier + seeders
+        score += min(int(size_mb / 40), 60)
+        score += min(seeders, 30)
 
         candidates.append({
-            "quality": q_label,
+            "quality": q.get("quality") or "720p AVC",
             "size_str": size_str,
             "size_mb": size_mb,
             "seeders": seeders,
@@ -195,7 +200,7 @@ def select_qualities_for_leech(movie: Dict[str, Any], min_size_mb: int, max_file
             "score": score
         })
 
-    # Sort descending by score and pick at most max_files (e.g. 2)
+    # Sort descending by score and pick only the top requested files (default 1)
     candidates.sort(key=lambda x: x["score"], reverse=True)
     return candidates[:max_files]
 
