@@ -47,6 +47,40 @@ router = APIRouter(prefix="/api/admin/global", tags=["admin"])
 
 PAGE_SIZE = 30
 
+# In-memory chat-title cache: the Channels/health views call _chat_title() per
+# chat on every load, and each one is a Telegram get_chat round-trip. Cache for
+# 30 min so repeated panel loads are instant.
+_chat_title_cache: dict = {}
+_CHAT_TITLE_TTL = 1800.0
+
+
+async def _all_chat_title_map() -> dict:
+    """chat_id -> title, resolved once and cached (bulk-friendly)."""
+    now = time.time()
+    cached = _chat_title_cache.get("_map")
+    if cached and now - cached[0] < _CHAT_TITLE_TTL:
+        return cached[1]
+    title_map = {}
+    try:
+        from app.client import client
+        if client is not None and client.is_connected:
+            async for d in client.iter_dialogs():
+                try:
+                    cid = getattr(getattr(d, "chat", None), "id", None)
+                    nm = getattr(getattr(d, "chat", None), "title", None)
+                    if cid is not None:
+                        title_map[int(cid)] = nm or str(cid)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    _chat_title_cache["_map"] = (now, title_map)
+    return title_map
+
+
+def invalidate_chat_title_cache() -> None:
+    _chat_title_cache.pop("_map", None)
+
 
 # ---------------------------------------------------------------------------
 # Stats
@@ -62,8 +96,9 @@ async def global_stats(_: bool = Depends(require_auth)):
     async for c in db.col("catalogs").find().sort("order", 1):
         c["count"] = counts.get(c["_id"], 0)
         cats.append(c)
-    recent = await db.col("files").find().sort("_id", -1).limit(50).to_list(None)
-    return {"files_count": files_count, "catalogs": cats, "recent_files": recent}
+    # NOTE: the unused "recent_files" (50 full docs) was removed — the panel
+    # never renders it, and it was the heaviest part of this call on large DBs.
+    return {"files_count": files_count, "catalogs": cats, "recent_files": []}
 
 
 @router.get("/files/catalog/{catalog_id}")
@@ -72,8 +107,17 @@ async def get_catalog_files(catalog_id: str, page: int = 1, _: bool = Depends(re
     query = {"catalog": catalog_id}
     total = await db.col("meta").count_documents(query)
     items = await db.col("meta").find(query).sort([("updated_at", -1), ("_id", -1)]).skip(skip).limit(PAGE_SIZE).to_list(None)
+    # ONE aggregation for all file counts instead of one count_documents per title.
+    id_set = [it["_id"] for it in items]
+    counts = {}
+    if id_set:
+        async for row in db.col("files").aggregate([
+            {"$match": {"meta_id": {"$in": id_set}}},
+            {"$group": {"_id": "$meta_id", "n": {"$sum": 1}}},
+        ]):
+            counts[row["_id"]] = row["n"]
     for item in items:
-        item["file_count"] = await db.col("files").count_documents({"meta_id": item["_id"]})
+        item["file_count"] = counts.get(item["_id"], 0)
     return {"items": items, "total_pages": (total + PAGE_SIZE - 1) // PAGE_SIZE or 1, "total_items": total}
 
 
@@ -544,12 +588,18 @@ async def remap_title(meta_id: str, request: Request, _: bool = Depends(require_
 # ---------------------------------------------------------------------------
 
 async def _chat_title(chat_id: int) -> str:
+    title_map = await _all_chat_title_map()
+    name = title_map.get(int(chat_id))
+    if name:
+        return name
     try:
         from app.client import client
 
         if client is not None and client.is_connected:
             chat = await client.get_chat(chat_id)
-            return chat.title or str(chat_id)
+            title = chat.title or str(chat_id)
+            title_map[int(chat_id)] = title
+            return title
     except Exception:
         pass
     return str(chat_id)
@@ -628,6 +678,7 @@ async def channel_add(payload: dict, _: bool = Depends(require_auth)):
     if not chat_id:
         return {"status": "error", "message": "Could not resolve channel (use id, -100 id, or @username)."}
     await add_channel(chat_id)
+    invalidate_chat_title_cache()
     return {"status": "success", "chat_id": chat_id, "name": await _chat_title(chat_id)}
 
 
@@ -782,6 +833,38 @@ async def health(_: bool = Depends(require_auth)):
         "catalog_counts": {"files": files, "meta": meta, "unindexed": unindexed},
         "telemetry": tele,
         "instance": instance,
+    }
+
+
+@router.get("/stream-activity")
+async def stream_activity(_: bool = Depends(require_auth)):
+    """Cheap, poll-friendly stream telemetry for the dashboard widget.
+
+    Unlike /health this does NOT run any MongoDB counts, so the live Mbps
+    indicator can poll it every few seconds at near-zero cost."""
+    from app import client as client_mod
+    try:
+        from app import bot_client
+        bots_connected = bot_client.is_connected() if bot_client.is_enabled() else False
+    except Exception:
+        bots_connected = False
+    try:
+        from app.streamer import flood_state
+        flood = flood_state()
+    except Exception:
+        flood = {"throttled": False}
+    snap = telemetry.snapshot()
+    active = snap.get("active_streams", [])
+    total_mbps = sum(a.get("instant_mbps", 0) or 0 for a in active)
+    return {
+        "active_count": len(active),
+        "total_mbps": round(total_mbps, 2),
+        "throttled": flood.get("throttled", False),
+        "user_online": client_mod.is_connected(),
+        "bots_online": bots_connected,
+        "indexer_running": status().get("running", False),
+        "active": active,
+        "counters": snap.get("counters", {}),
     }
 
 

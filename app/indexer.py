@@ -694,7 +694,7 @@ _bg_sync_stop_event = asyncio.Event()
 
 
 async def _background_sync_loop(interval_seconds: int = 300) -> None:
-    """Periodically syncs all tracked channels in the background every 5 minutes."""
+    """Periodically syncs tracked channels in the background (backup to live handlers)."""
     LOGGER.info(f"[INDEXER] Global background sync worker started (interval: {interval_seconds}s)")
     # Initial pause for client bootstrap
     try:
@@ -720,13 +720,14 @@ async def _background_sync_loop(interval_seconds: int = 300) -> None:
             break
 
 
-def start_background_watcher(interval_seconds: int = 300) -> None:
+def start_background_watcher(interval_seconds: int = None) -> None:
     """Start the Global channel background watcher/sync loop."""
     global _bg_sync_task, _bg_sync_stop_event
     if _bg_sync_task is not None and not _bg_sync_task.done():
         return
+    interval = interval_seconds or (config.BACKGROUND_SYNC_MINUTES * 60)
     _bg_sync_stop_event.clear()
-    _bg_sync_task = asyncio.create_task(_background_sync_loop(interval_seconds))
+    _bg_sync_task = asyncio.create_task(_background_sync_loop(interval))
 
 
 def stop_background_watcher() -> None:

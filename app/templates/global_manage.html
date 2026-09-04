@@ -42,6 +42,16 @@
     </div>
 </div>
 
+<!-- Live streaming activity widget (lightweight, no DB counts) -->
+<div id="live-activity-bar" style="display:flex; gap:14px; flex-wrap:wrap; align-items:center; background:var(--card); border:1px solid var(--border); border-radius:12px; padding:0.7rem 1.1rem; margin-bottom:1.5rem; font-size:0.85rem;">
+    <span style="font-weight:700; display:flex; align-items:center; gap:7px;"><i class="fa-solid fa-bolt" style="color:var(--primary);"></i> Live Streams</span>
+    <span>Active: <b id="la-count" style="color:var(--primary);">0</b></span>
+    <span>Speed: <b id="la-mbps" style="color:#22c55e;">0.0</b> Mbps</span>
+    <span id="la-throttle" style="display:none; color:#eab308;"><i class="fa-solid fa-triangle-exclamation"></i> Throttled</span>
+    <span id="la-user" style="color:var(--text-sec);">userbot …</span>
+    <span id="la-idx" style="color:var(--text-sec); margin-left:auto;"></span>
+</div>
+
 {% if manifest_url %}
 <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:1.5rem; background: var(--card); padding: 1rem 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
     <i class="fa-solid fa-bolt" style="color:var(--primary); font-size:1.4rem;"></i>
@@ -670,15 +680,16 @@ async function checkIndexer() {
             if (wipeBtn) wipeBtn.disabled = true;
             lbl.textContent = "RUNNING IN BACKGROUND";
             lbl.style.color = "#22c55e";
-            setTimeout(checkIndexer, 5000);
+            setTimeout(checkIndexer, 4000);
         } else {
             btn.innerHTML = '<i class="fa-solid fa-play"></i> Sync All Channels';
             btn.classList.replace('btn-danger', 'btn-primary');
             if (wipeBtn) wipeBtn.disabled = false;
             lbl.textContent = "IDLE";
             lbl.style.color = "var(--text-sec)";
+            setTimeout(checkIndexer, 30000); // idle: re-check rarely so the panel stays light
         }
-    } catch (e) {}
+    } catch (e) { setTimeout(checkIndexer, 30000); }
 }
 
 async function toggleIndexer() {
@@ -2130,7 +2141,29 @@ async function triggerDigitalQualityLeech(itemIdx, qIdx, btnId) {
     }
 }
 
-document.addEventListener("DOMContentLoaded", () => { switchView('{{ initial_view|default("dashboard") }}'); checkIndexer(); checkTasks(); });
+// --- Lightweight live-stream activity widget (no DB counts; safe to poll) ---
+async function pollStreamActivity() {
+    try {
+        const res = await fetch('/api/admin/global/stream-activity');
+        if (!res.ok) return;
+        const d = await res.json();
+        document.getElementById('la-count').textContent = d.active_count || 0;
+        document.getElementById('la-mbps').textContent = (d.total_mbps || 0).toFixed(1);
+        document.getElementById('la-throttle').style.display = d.throttled ? '' : 'none';
+        document.getElementById('la-user').innerHTML =
+            `<i class="fa-solid fa-circle" style="color:${d.user_online ? '#22c55e' : '#ef4444'}; font-size:0.6rem;"></i> userbot` +
+            (d.bots_online ? ` &nbsp;<i class="fa-solid fa-circle" style="color:#22c55e; font-size:0.6rem;"></i> bots` : '');
+        document.getElementById('la-idx').textContent = d.indexer_running ? '⏳ indexer running' : '';
+    } catch (e) {}
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    switchView('{{ initial_view|default("dashboard") }}');
+    checkIndexer();
+    checkTasks();
+    pollStreamActivity();
+    setInterval(pollStreamActivity, 5000);   // cheap endpoint — live Mbps
+});
 </script>
 {% endif %}
 {% endblock %}

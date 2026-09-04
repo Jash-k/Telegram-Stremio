@@ -103,6 +103,13 @@ FLOOD_COOLDOWN_SECONDS = _int("FLOOD_COOLDOWN_SECONDS", 12)
 # Self-ping interval (minutes) to defeat Koyeb scale-to-zero.
 KEEPALIVE_MINUTES = _int("KEEPALIVE_MINUTES", 15)
 
+# Periodic incremental channel re-scan (the every-5-minutes background indexer).
+# New files are ALREADY indexed in real time by the live update handlers, so this
+# periodic scan is a redundant backup that competes with the web panel and with
+# streaming for CPU/network. OFF by default; set true only if you need it.
+BACKGROUND_SYNC_ENABLED = os.getenv("BACKGROUND_SYNC_ENABLED", "false").lower() in ("true", "1", "yes")
+BACKGROUND_SYNC_MINUTES = _int("BACKGROUND_SYNC_MINUTES", 5)
+
 # ---------------------------------------------------------------------------
 # PreDVD Auto-Leecher & Stream Lifecycle Settings
 # ---------------------------------------------------------------------------

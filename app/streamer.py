@@ -169,17 +169,19 @@ class Streamer:
         return session
 
     async def _prewarm_sessions(self) -> None:
-        """Open ONE media session to each common DC up front (timeout-bounded).
-
-        The pool grows to the configured size lazily on demand, so startup
-        stays cheap and we never open sessions we don't need."""
+        """Open ONE media session to each common file DC up front, so the FIRST
+        stream's chunks never pay a session-handshake (auth-export) cost — that
+        is the difference between instant and delayed playback start. The pool
+        then grows lazily to its full size under load. Timeout-bounded."""
         if self.client is None or not self.client.is_connected:
             return
         try:
-            await self.client.storage.dc_id()
+            current_dc = await self.client.storage.dc_id()
         except Exception:
-            return
-        for dc in (2, 4):  # Telegram's biggest file DCs
+            current_dc = None
+        for dc in (1, 2, 4, 5):
+            if dc == current_dc:
+                continue  # same-DC files use the main session (no new auth needed)
             try:
                 await asyncio.wait_for(self._ensure_dc_session(dc), timeout=MEDIA_SESSION_TIMEOUT)
             except Exception:

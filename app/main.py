@@ -82,9 +82,27 @@ async def lifespan(app: FastAPI):
     from app import predvd_automator
     predvd_automator.start()
 
-    # Start Global Indexer Periodic Background Sync loop
-    from app import indexer
-    indexer.start_background_watcher()
+    # Start Global Indexer Periodic Background Sync loop — OFF by default.
+    # New files are caught in real time by live handlers; this only rescans.
+    if config.BACKGROUND_SYNC_ENABLED:
+        from app import indexer
+        indexer.start_background_watcher()
+        LOGGER.info("Periodic incremental sync ENABLED (every %s min)", config.BACKGROUND_SYNC_MINUTES)
+    else:
+        LOGGER.info("Periodic incremental sync DISABLED (live indexing still active). Set BACKGROUND_SYNC_ENABLED=true to re-enable.")
+
+    # Pre-warm media sessions for the streaming clients so the FIRST stream
+    # starts fast (no on-demand session handshake at click time).
+    try:
+        from app import streamer as streamer_mod, client as client_mod
+        from app.routes.stream import _get_streamer_for
+        if client_mod.is_connected():
+            _get_streamer_for(client_mod.client)
+        from app import bot_client
+        for bot in await bot_client.connected_bots():
+            _get_streamer_for(bot)
+    except Exception as exc:
+        LOGGER.debug("streamer warmup skipped: %s", exc)
 
     yield
 
