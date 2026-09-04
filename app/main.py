@@ -99,6 +99,11 @@ async def lifespan(app: FastAPI):
     from app import bot_client
 
     await bot_client.stop()
+    try:
+        from app import cleanup_bot
+        await cleanup_bot.stop()
+    except Exception:
+        pass
     await db.disconnect()
 
 

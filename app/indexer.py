@@ -25,6 +25,7 @@ from .parser import (
     global_file_key,
     languages_from_filename,
     parse_combined_episodes,
+    source_from_filename,
 )
 
 _VIDEO_EXTS = (".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv", ".webm", ".flv")
@@ -109,6 +110,40 @@ async def configured_channels() -> list[int]:
     return sorted(ids, key=abs)
 
 
+# ---------------------------------------------------------------------------
+# Cached configured-channel set (hot path for live update filters)
+# ---------------------------------------------------------------------------
+#
+# Live Telegram handlers must answer "is this one of my media channels?" for
+# EVERY incoming update. Resolving that via configured_channels() (which runs a
+# full-collection aggregation over all files) on each message is far too
+# expensive — a busy leech supergroup emits hundreds of progress-edits a
+# minute, and each one used to trigger a DB scan. Cache the canonical id set.
+_CHANNEL_CACHE_TTL = 60.0
+_channel_cache: dict = {"ids": None, "expires": 0.0}
+
+
+async def configured_channel_ids(force_refresh: bool = False) -> set[int]:
+    """Canonical (-100…) media-channel ids, cached for a few seconds."""
+    now = time.time()
+    if (
+        not force_refresh
+        and _channel_cache["ids"] is not None
+        and now < _channel_cache["expires"]
+    ):
+        return _channel_cache["ids"]
+    ids = set(await configured_channels())
+    _channel_cache["ids"] = ids
+    _channel_cache["expires"] = now + _CHANNEL_CACHE_TTL
+    return ids
+
+
+def invalidate_channel_cache() -> None:
+    """Drop the cached channel set (call after add/remove)."""
+    _channel_cache["ids"] = None
+    _channel_cache["expires"] = 0.0
+
+
 async def get_channel_config() -> list[int]:
     """Raw configured list (panel management view), or auto-derived."""
     doc = await db.col("state").find_one({"_id": _CHANNELS_DOC})
@@ -129,6 +164,7 @@ async def add_channel(chat_id: int) -> bool:
         {"$set": {"channels": sorted(all_ids, key=abs)}},
         upsert=True,
     )
+    invalidate_channel_cache()
     return True
 
 
@@ -145,6 +181,7 @@ async def remove_channel(chat_id: int) -> bool:
         )
     # Clear its sync checkpoints so a re-add starts fresh.
     await db.col("state").delete_many({"_id": {"$regex": f"^sync_{chat_id}_"}})
+    invalidate_channel_cache()
     return True
 
 
@@ -442,6 +479,9 @@ async def _process_message(chat_id: int, message) -> str | None:
             "codec": parsed.get("codec") or "",
             "audio": parsed.get("audio") or "",
             "resolution": parsed.get("resolution") or "",
+            # Release source: 'predvd' (theatrical/cam) vs 'digital' vs 'unknown'.
+            # Drives cleanup that removes PreDVD once an official print arrives.
+            "source": source_from_filename(filename),
             "chat_id": int(chat_id),
             "message_id": int(message.id),
             "season": first_int(combined["season"]) if combined else season,
@@ -460,6 +500,26 @@ async def _process_message(chat_id: int, message) -> str | None:
     except Exception as exc:
         LOGGER.error(f"[INDEXER] Exception processing message {getattr(message, 'id', '?')} in {chat_id}: {exc}")
         return None
+
+
+async def _cleanup_touched(meta_ids: set) -> int:
+    """Run the best-of-3 / PreDVD-removal cleanup over titles touched this scan.
+
+    Capped so a massive historic run doesn't spend forever; titles beyond the
+    cap are picked up by a later run (or an explicit bulk cleanup)."""
+    if not meta_ids:
+        return 0
+    from .cleanup import clean_meta_files
+
+    removed = 0
+    for meta_id in list(meta_ids)[:200]:
+        if _stop_requested:
+            break
+        try:
+            removed += await clean_meta_files(meta_id)
+        except Exception as exc:
+            LOGGER.error(f"[INDEXER] cleanup error for {meta_id}: {exc}")
+    return removed
 
 
 async def _unprocessed(chat_id: int, messages) -> list:
@@ -482,6 +542,7 @@ async def _scan_channel(client, chat_id: int, force_historic: bool, total: dict)
         _status["current_filter"] = msg_filter.name
         sync_key = f"sync_{chat_id}_{msg_filter.name}"
         sync = await db.col("state").find_one({"_id": sync_key}) or {}
+        touched_meta: set = set()
 
         historic_done = False if force_historic else sync.get("historic_done", False)
         last_id = sync.get("last_id", 0)
@@ -505,7 +566,9 @@ async def _scan_channel(client, chat_id: int, force_historic: bool, total: dict)
                         if _stop_requested:
                             break
                         try:
-                            await _process_message(chat_id, candidate)
+                            _mid = await _process_message(chat_id, candidate)
+                            if _mid:
+                                touched_meta.add(_mid)
                         except Exception as p_err:
                             LOGGER.error(f"[INDEXER] error processing msg {getattr(candidate, 'id', '?')} in {chat_id}: {p_err}")
                         total["processed"] += 1
@@ -519,7 +582,9 @@ async def _scan_channel(client, chat_id: int, force_historic: bool, total: dict)
                 if batch and not _stop_requested:
                     for candidate in (batch if force_historic else await _unprocessed(chat_id, batch)):
                         try:
-                            await _process_message(chat_id, candidate)
+                            _mid = await _process_message(chat_id, candidate)
+                            if _mid:
+                                touched_meta.add(_mid)
                         except Exception as p_err:
                             LOGGER.error(f"[INDEXER] error processing msg {getattr(candidate, 'id', '?')} in {chat_id}: {p_err}")
                         total["processed"] += 1
@@ -531,6 +596,8 @@ async def _scan_channel(client, chat_id: int, force_historic: bool, total: dict)
                         upsert=True,
                     )
                     LOGGER.info(f"[INDEXER] {chat_id} {msg_filter.name}: historic complete")
+                if not _stop_requested:
+                    await _cleanup_touched(touched_meta)
             except FloodWait as fw:
                 _status["last_error"] = f"FloodWait {chat_id} (resumable)"
                 await asyncio.sleep(getattr(fw, "value", 5))
@@ -548,7 +615,9 @@ async def _scan_channel(client, chat_id: int, force_historic: bool, total: dict)
                         break
                     highest_seen = max(highest_seen, msg.id)
                     try:
-                        await _process_message(chat_id, msg)
+                        _mid = await _process_message(chat_id, msg)
+                        if _mid:
+                            touched_meta.add(_mid)
                     except Exception as p_err:
                         LOGGER.error(f"[INDEXER] error processing incremental msg {getattr(msg, 'id', '?')} in {chat_id}: {p_err}")
                     total["processed"] += 1
@@ -557,6 +626,8 @@ async def _scan_channel(client, chat_id: int, force_historic: bool, total: dict)
                     await db.col("state").update_one(
                         {"_id": sync_key}, {"$set": {"last_id": highest_seen}}, upsert=True
                     )
+                if not _stop_requested:
+                    await _cleanup_touched(touched_meta)
             except FloodWait as fw:
                 _status["last_error"] = f"FloodWait {chat_id} (resumable)"
                 await asyncio.sleep(getattr(fw, "value", 5))

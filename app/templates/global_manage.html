@@ -79,6 +79,39 @@
     <button id="tab-channels" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('channels')"><i class="fa-solid fa-server"></i> Channels</button>
     <button id="tab-unidx" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('unindexed')"><i class="fa-solid fa-triangle-exclamation"></i> Unindexed Queue <span id="unindexed-badge" class="badge" style="display:none; background:#ef4444; color:white; margin-left:5px;">0</span></button>
     <button id="tab-predvd" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('predvd')"><i class="fa-solid fa-fire-flame-curved" style="color:#f43f5e;"></i> PreDVD Auto-Leech</button>
+    <button id="tab-digital" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('digital')"><i class="fa-solid fa-compact-disc" style="color:#22c55e;"></i> Digital Releases</button>
+</div>
+
+<!-- Digital Releases View (manual leech of official WEB-DL / HD prints) -->
+<div id="view-digital" style="display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; flex-wrap:wrap; gap:10px;">
+        <div>
+            <h3 style="font-size:1.1rem; font-weight:600; display:flex; align-items:center; gap:8px;">
+                <i class="fa-solid fa-compact-disc" style="color:#22c55e;"></i>
+                <span>Official Digital Releases (WEB-DL / BluRay / HDRip)</span>
+            </h3>
+            <p style="font-size:0.8rem; color:var(--text-sec); margin-top:2px;">
+                Official digital prints in the feed — <strong>manual leech only</strong>. When one lands in your dump channel, the global indexer automatically removes the older PreDVD.
+            </p>
+        </div>
+        <button onclick="loadDigital()" class="btn btn-primary" style="background:#16a34a; border-color:#15803d; padding:0.4rem 0.8rem; font-size:0.85rem;"><i class="fa-solid fa-rotate"></i> Refresh</button>
+    </div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+        <table class="table" style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+            <thead>
+                <tr style="text-align:left; border-bottom:1px solid var(--border);">
+                    <th style="padding:10px;">Poster</th>
+                    <th style="padding:10px;">Title</th>
+                    <th style="padding:10px;">Language</th>
+                    <th style="padding:10px;">Available Qualities (click to leech)</th>
+                    <th style="padding:10px; text-align:right;">Status</th>
+                </tr>
+            </thead>
+            <tbody id="digital-feed-tbody">
+                <tr><td colspan="5" style="text-align:center; padding:1.5rem; color:var(--text-sec);"><i class="fa-solid fa-spinner fa-spin"></i> Loading digital releases…</td></tr>
+            </tbody>
+        </table>
+    </div>
 </div>
 
 <!-- PreDVD Auto-Leech View -->
@@ -90,7 +123,7 @@
                 <span>Tamil PreDVD Auto-Leecher & Stream Manager</span>
             </h3>
             <p style="font-size:0.8rem; color:var(--text-sec); margin-top:2px;">
-                Auto-leeches new Tamil PreDVDs into your group and auto-purges old PreDVDs when official prints arrive.
+                Auto-sends the leech command for new Tamil PreDVDs (waits/queues while the global indexer is busy). The global indexer then removes each PreDVD automatically when the official digital print arrives — see <strong>Digital Releases</strong>.
             </p>
         </div>
         <div style="display:flex; gap:8px;">
@@ -152,12 +185,11 @@
             <div style="grid-column: 1 / -1; display:flex; gap:1.5rem; flex-wrap:wrap; padding-top:0.5rem; border-top:1px solid var(--border);">
                 <label style="display:flex; align-items:center; gap:8px; font-size:0.85rem; cursor:pointer;">
                     <input type="checkbox" id="predvd-set-enabled" checked>
-                    <span>Auto-Leech Enabled (Monitors feed every 15m)</span>
+                    <span>Auto-Leech Enabled (Monitors feed; waits/queues while the global indexer runs)</span>
                 </label>
-                <label style="display:flex; align-items:center; gap:8px; font-size:0.85rem; cursor:pointer;">
-                    <input type="checkbox" id="predvd-set-auto-purge" checked>
-                    <span>Auto-Purge old PreDVD from Stremio when WEB-DL / HD arrives</span>
-                </label>
+                <span style="font-size:0.78rem; color:var(--text-sec); align-self:center;">
+                    <i class="fa-solid fa-circle-info"></i> PreDVD removal on official HD is handled automatically by the global indexer.
+                </span>
             </div>
             <div style="grid-column: 1 / -1; text-align:right;">
                 <button type="submit" class="btn btn-primary" style="background:#8b5cf6; border-color:#7c3aed; padding:0.4rem 1.2rem; font-size:0.85rem;"><i class="fa-solid fa-floppy-disk"></i> Save PreDVD Settings</button>
@@ -535,11 +567,13 @@ function switchView(viewName) {
     document.getElementById('view-meta-files').style.display = 'none';
     document.getElementById('view-health').style.display = 'none';
     document.getElementById('view-predvd').style.display = 'none';
-    
+    document.getElementById('view-digital').style.display = 'none';
+
     document.getElementById('tab-dash').classList.replace('btn-primary', 'btn-ghost');
     document.getElementById('tab-channels').classList.replace('btn-primary', 'btn-ghost');
     document.getElementById('tab-unidx').classList.replace('btn-primary', 'btn-ghost');
     document.getElementById('tab-predvd').classList.replace('btn-primary', 'btn-ghost');
+    document.getElementById('tab-digital').classList.replace('btn-primary', 'btn-ghost');
     
     if (viewName === 'dashboard') {
         document.getElementById(`view-dashboard`).style.display = 'block';
@@ -566,6 +600,11 @@ function switchView(viewName) {
         document.getElementById('tab-predvd').classList.replace('btn-ghost', 'btn-primary');
         loadPreDVD();
         currentActiveCallback = loadPreDVD;
+    } else if (viewName === 'digital') {
+        document.getElementById(`view-digital`).style.display = 'block';
+        document.getElementById('tab-digital').classList.replace('btn-ghost', 'btn-primary');
+        loadDigital();
+        currentActiveCallback = loadDigital;
     } else {
         document.getElementById(`view-${viewName}`).style.display = 'block';
     }
@@ -1538,7 +1577,6 @@ async function loadPreDVD() {
         document.getElementById('predvd-set-min-size').value = s.min_size_mb !== undefined ? s.min_size_mb : 800;
         document.getElementById('predvd-set-max-files').value = s.max_files_per_movie !== undefined ? s.max_files_per_movie : 1;
         document.getElementById('predvd-set-enabled').checked = s.enabled !== false;
-        document.getElementById('predvd-set-auto-purge').checked = s.auto_purge_on_webdl !== false;
 
         document.getElementById('predvd-stat-status').innerText = s.enabled ? 'Enabled' : 'Disabled';
         document.getElementById('predvd-stat-status').style.color = s.enabled ? '#22c55e' : '#ef4444';
@@ -1657,7 +1695,6 @@ async function savePreDVDSettings(e) {
         min_size_mb: parseInt(document.getElementById('predvd-set-min-size').value, 10),
         max_files_per_movie: parseInt(document.getElementById('predvd-set-max-files').value, 10),
         enabled: document.getElementById('predvd-set-enabled').checked,
-        auto_purge_on_webdl: document.getElementById('predvd-set-auto-purge').checked,
     };
 
     try {
@@ -1685,7 +1722,7 @@ async function syncPreDVDFeed() {
         const data = await res.json();
         if (data.ok) {
             const r = data.result || {};
-            showNotification(`Feed check complete: ${r.leeched || 0} leeched, ${r.purged || 0} PreDVDs purged.`, 'success');
+            showNotification(`Feed check complete: ${r.leeched || 0} sent, ${r.queued || 0} queued, ${r.pending || 0} pending.`, 'success');
             loadPreDVD();
         } else {
             showNotification('Feed check failed: ' + (data.detail || 'Unknown error'), 'error');
@@ -1782,6 +1819,107 @@ async function triggerDirectQualityLeech(itemIdx, qIdx, btnId) {
             btn.disabled = false;
             btn.innerHTML = originalHtml;
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Digital Releases tab (official WEB-DL/HD — manual leech only)
+// ---------------------------------------------------------------------------
+window.__digitalFeedItems = [];
+
+async function loadDigital() {
+    const tbody = document.getElementById('digital-feed-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:1.5rem; color:var(--text-sec);"><i class="fa-solid fa-spinner fa-spin"></i> Loading digital releases…</td></tr>';
+    try {
+        const res = await fetch('/api/admin/global/predvd/digital');
+        const data = await res.json();
+        const items = data.items || [];
+        window.__digitalFeedItems = items;
+        if (!items.length) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:1.5rem; color:var(--text-sec);">No official digital releases found in the current feed.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = items.map((item, idx) => {
+            const poster = item.poster || 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=100';
+            const langs = (item.languages && item.languages.length) ? item.languages.join(', ') : (item.raw_text || '');
+            const qualitiesList = (item.qualities || []).filter(q => String(q.url || '').startsWith('magnet:'));
+            const qualityButtons = qualitiesList.map((q, qIdx) => {
+                const btnId = `btn-d-${idx}-${qIdx}`;
+                const sizeStr = q.size || '';
+                return `
+                    <button id="${btnId}" onclick="triggerDigitalQualityLeech(${idx}, ${qIdx}, '${btnId}')" style="display:inline-flex; align-items:center; gap:5px; background:rgba(34,197,94,0.10); color:#22c55e; border:1px solid rgba(34,197,94,0.35); border-radius:6px; padding:4px 8px; font-size:0.75rem; font-weight:700; cursor:pointer; margin:2px 4px 2px 0; transition:all 0.15s ease;" title="Click to leech this exact ${escapeHtml(q.quality || 'HD')} (${sizeStr}) file">
+                        <i class="fa-solid fa-cloud-arrow-down" style="font-size:0.7rem;"></i>
+                        <span>${escapeHtml(q.quality || 'HD')}</span>
+                        <span style="font-weight:normal; opacity:0.85;">(${sizeStr || 'N/A'})</span>
+                        <span style="font-size:0.68rem; color:#22c55e;">● ${q.seeders || 0}s</span>
+                    </button>`;
+            }).join('') || '<span style="font-size:0.75rem; color:var(--text-sec);">No magnet links found</span>';
+
+            let statusBadge;
+            if (item.in_library) {
+                statusBadge = '<span class="badge" style="background:#22c55e; color:white;"><i class="fa-solid fa-check"></i> In Stremio</span>';
+            } else {
+                statusBadge = '<span class="badge" style="background:rgba(255,255,255,0.1); color:var(--text-sec);">Digital — manual</span>';
+            }
+
+            return `
+                <tr>
+                    <td><img src="${poster}" style="width:36px; height:52px; object-fit:cover; border-radius:4px; background:var(--bg);" onerror="this.src='https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=100'"></td>
+                    <td><strong>${escapeHtml(item.title || 'Untitled')}</strong> <span style="font-size:0.8rem; color:var(--text-sec);">(${item.year || ''})</span></td>
+                    <td><span style="font-size:0.8rem;">${escapeHtml(langs)}</span></td>
+                    <td style="line-height:1.8;">${qualityButtons}</td>
+                    <td style="text-align:right;">${statusBadge}</td>
+                </tr>`;
+        }).join('');
+    } catch (e) {
+        console.error('loadDigital error:', e);
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:1.5rem; color:#f43f5e;">Failed to load digital feed: ${escapeHtml(e.message)}</td></tr>`;
+    }
+}
+
+async function triggerDigitalQualityLeech(itemIdx, qIdx, btnId) {
+    const item = window.__digitalFeedItems?.[itemIdx];
+    if (!item) { showNotification('Movie data not found', 'error'); return; }
+    const qualitiesList = (item.qualities || []).filter(q => String(q.url || '').startsWith('magnet:'));
+    const q = qualitiesList[qIdx];
+    if (!q || !q.url) { showNotification('Invalid magnet link for selected quality', 'error'); return; }
+
+    const title = item.title || 'Untitled';
+    const qualityLabel = `${q.quality || 'HD'} (${q.size || 'Size N/A'})`;
+    const targetGroup = cachedPreDVDSettings?.group_id || document.getElementById('predvd-set-group-id')?.value || '';
+
+    if (!confirm(`Send leech command to group ${targetGroup}?\n\n🎬 ${title}\n⚡ Quality: ${qualityLabel}\n👥 Seeds: ${q.seeders || 0}`)) {
+        return;
+    }
+
+    const btn = document.getElementById(btnId);
+    let originalHtml = '';
+    if (btn) { originalHtml = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Sending...'; }
+    showNotification(`Sending leech for ${title} [${qualityLabel}]...`, 'info');
+
+    try {
+        const res = await fetch('/api/admin/global/predvd/manual-leech', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title, magnet_url: q.url, quality: qualityLabel })
+        });
+        const data = await res.json();
+        if (res.ok && data.ok) {
+            showNotification(data.message || 'Leech command sent!', 'success');
+            if (btn) {
+                btn.style.background = '#16a34a'; btn.style.borderColor = '#22c55e'; btn.style.color = '#fff';
+                btn.innerHTML = data.queued ? '<i class="fa-solid fa-clock"></i> Queued' : '<i class="fa-solid fa-check"></i> Sent ✓';
+            }
+            setTimeout(loadDigital, 1500);
+        } else {
+            const err = data.detail || data.message || 'Failed to send command';
+            showNotification(err, 'error');
+            if (btn) { btn.disabled = false; btn.innerHTML = originalHtml; }
+        }
+    } catch (err) {
+        showNotification('Network error: ' + err.message, 'error');
+        if (btn) { btn.disabled = false; btn.innerHTML = originalHtml; }
     }
 }
 

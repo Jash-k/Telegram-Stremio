@@ -142,6 +142,49 @@ def languages_from_filename(filename: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Release-source classification (PreDVD theatrical vs official digital)
+# ---------------------------------------------------------------------------
+#
+# Used by cleanup to remove a title's theatrical/cam rips once a genuine
+# digital print exists — even when the predvd is mis-labeled "1080p".
+# Kept here next to the other filename helpers so the indexer and cleanup
+# share one definition.
+
+_PREDVD_SOURCE_RE = re.compile(
+    r"\b(pre[-\s]?dvd|predvd|camrip|cam-rip|hdcam|\bcam\b|dvdscr|dvd-scr|\bscr\b|"
+    r"hdtc|hd-tc|hdts|hd-ts|hq-ts|telesync|\bts\b|theatrical|theater-?print|cinema-?print)\b",
+    re.IGNORECASE,
+)
+_DIGITAL_SOURCE_RE = re.compile(
+    r"\b(web[-\s]?dl|webdl|web[-\s]?hd|webrip|web-rip|bluray|blu-ray|bdrip|brrip|"
+    r"hdrip|hd-rip|dvdrip|dvd-rip|hddvd|\buhd\b|2160p|remux)\b",
+    re.IGNORECASE,
+)
+
+
+def source_from_filename(filename: str) -> str:
+    """Classify a file's release source: 'predvd', 'digital' or 'unknown'.
+
+    A predvd/cam tag always wins (so a file that mentions both is treated as
+    theatrical and removed once a clean digital copy exists).
+    """
+    low = str(filename or "").lower()
+    if _PREDVD_SOURCE_RE.search(low):
+        return "predvd"
+    if _DIGITAL_SOURCE_RE.search(low):
+        return "digital"
+    return "unknown"
+
+
+def is_predvd_filename(filename: str) -> bool:
+    return source_from_filename(filename) == "predvd"
+
+
+def is_digital_filename(filename: str) -> bool:
+    return source_from_filename(filename) == "digital"
+
+
 def determine_catalog(details: dict, media_type: str, filename: str) -> str:
     original_lang = details.get("original_language", "") or ""
     genres = [g.get("name", "") for g in (details.get("genres") or [])]

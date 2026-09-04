@@ -2,31 +2,44 @@
 from pyrogram import filters, handlers
 
 from . import config, db
-from .indexer import _configured_channels, _process_message, remove_file_reference, resolve_channel_ids
+from .indexer import _process_message, configured_channel_ids, remove_file_reference
 from .logger import LOGGER
 
 _installed = False
 
 
+def _has_media(update) -> bool:
+    return bool(getattr(update, "video", None) or getattr(update, "document", None) or getattr(update, "animation", None))
+
+
 async def _in_channel(_, __, update):
+    """Cheap, FAIL-CLOSED membership check.
+
+    Uses a short-TTL cached set of configured media-channel ids (a plain
+    in-memory lookup) so a noisy leech supergroup the userbot happens to be in
+    can never trigger a full-DB aggregation on every progress-edit. On any
+    error we DENY (return False) — never index a chat we can't confirm.
+    """
     chat_id = getattr(getattr(update, "chat", None), "id", None)
     if chat_id is None:
         return False
     try:
-        configured = set(await _configured_channels())
+        configured = await configured_channel_ids()
         if not configured:
-            return True
+            return False  # nothing configured → ignore everything
         raw_id = int(chat_id)
         canonical_id = raw_id if raw_id < 0 else int(f"-100{raw_id}")
         return raw_id in configured or canonical_id in configured
-    except Exception:
-        return True
+    except Exception as exc:
+        LOGGER.debug("[LIVE] channel check failed (denying): %s", exc)
+        return False
 
 
 async def _media_in_channel(_, __, update):
-    if not await _in_channel(_, __, update):
+    # Reject non-media updates BEFORE any channel/DB work.
+    if not _has_media(update):
         return False
-    return bool(getattr(update, "video", None) or getattr(update, "document", None) or getattr(update, "animation", None))
+    return await _in_channel(_, __, update)
 
 
 media_filter = filters.create(_media_in_channel)
@@ -71,7 +84,10 @@ async def on_edited(client, message):
 
 
 async def on_deleted(client, messages):
-    channel_ids = set(await _configured_channels())
+    try:
+        channel_ids = await configured_channel_ids()
+    except Exception:
+        channel_ids = set()  # fail closed: do nothing if we can't resolve channels
     for message in messages or []:
         chat_id = getattr(getattr(message, "chat", None), "id", None)
         message_id = getattr(message, "id", None)
@@ -79,7 +95,7 @@ async def on_deleted(client, messages):
             try:
                 raw_id = int(chat_id)
                 canonical_id = raw_id if raw_id < 0 else int(f"-100{raw_id}")
-                if not channel_ids or raw_id in channel_ids or canonical_id in channel_ids:
+                if channel_ids and (raw_id in channel_ids or canonical_id in channel_ids):
                     await remove_file_reference(int(chat_id), int(message_id))
             except Exception as exc:
                 LOGGER.error(f"[LIVE] delete error: {exc}")

@@ -657,6 +657,7 @@ async def get_predvd_status():
     from app import predvd_automator
     settings = await predvd_automator.get_settings()
     status_info = predvd_automator.get_status()
+    status_info["queue_pending"] = await predvd_automator.queue_depth()
     snapshot_count = await db.col("predvd_snapshot").count_documents({})
     history_count = await db.col("predvd_history").count_documents({})
     return {
@@ -681,29 +682,81 @@ async def update_predvd_settings(request: Request):
     return {"ok": True, "settings": saved}
 
 
-@router.get("/predvd/feed", dependencies=[Depends(require_auth)])
-async def get_predvd_feed():
+async def _library_imdb_ids(external_ids: set) -> set:
+    """Which of the given IMDb ids already correspond to a title in GlobalDB."""
+    ids = {str(i) for i in external_ids if i}
+    if not ids:
+        return set()
+    found = set()
+    try:
+        cursor = db.col("meta").find(
+            {"$or": [{"imdb_id": {"$in": list(ids)}}, {"aliases": {"$in": list(ids)}}]},
+            {"imdb_id": 1},
+        )
+        async for doc in cursor:
+            if doc.get("imdb_id"):
+                found.add(str(doc["imdb_id"]).replace("song:", ""))
+    except Exception:
+        pass
+    return found
+
+
+def _serialize_feed_item(m: dict, snapshot_doc, in_library: bool) -> dict:
+    return {
+        "title": m.get("name") or m.get("titleGuess") or m.get("rawTitle") or "Untitled",
+        "year": m.get("year") or m.get("yearGuess") or None,
+        "imdb_id": m.get("imdbId") or "",
+        "poster": m.get("poster") or m.get("thumbnail") or "",
+        "languages": m.get("languages") or [],
+        "qualities": m.get("qualities") or [],
+        "page_url": m.get("pageUrl") or "",
+        "is_baseline": bool(snapshot_doc and snapshot_doc.get("is_baseline")),
+        "leeched": bool(snapshot_doc and snapshot_doc.get("leeched")),
+        "queued": bool(snapshot_doc and snapshot_doc.get("queued")),
+        "in_library": in_library,
+        "raw_text": m.get("rawText") or m.get("rawTitle") or "",
+    }
+
+
+async def _build_feed(predvd: bool):
     from app import predvd_automator
     settings = await predvd_automator.get_settings()
     feed_items = await predvd_automator.fetch_feed(settings.get("feed_url"))
-    tamil_predvds = []
+
+    selected = []
     for m in feed_items:
-        if predvd_automator.is_tamil_release(m) and predvd_automator.is_predvd_release(m):
-            key = m.get("imdbId") or m.get("name") or m.get("titleGuess") or m.get("rawTitle")
-            snapshot_doc = await db.col("predvd_snapshot").find_one({"_id": key}) if key else None
-            tamil_predvds.append({
-                "title": m.get("name") or m.get("titleGuess") or m.get("rawTitle") or "Untitled",
-                "year": m.get("year") or m.get("yearGuess") or 2026,
-                "imdb_id": m.get("imdbId") or "",
-                "poster": m.get("poster") or m.get("thumbnail") or "",
-                "languages": m.get("languages") or ["Tamil"],
-                "qualities": m.get("qualities") or [],
-                "page_url": m.get("pageUrl") or "",
-                "is_baseline": bool(snapshot_doc and snapshot_doc.get("is_baseline")),
-                "leeched": bool(snapshot_doc and snapshot_doc.get("leeched")),
-                "raw_text": m.get("rawText") or m.get("rawTitle") or "",
-            })
-    return {"ok": True, "count": len(tamil_predvds), "total_scraped": len(feed_items), "items": tamil_predvds}
+        if predvd:
+            ok = predvd_automator.is_tamil_release(m) and predvd_automator.is_predvd_release(m)
+        else:
+            # Digital tab: show ALL official digital/HD releases (any language),
+            # so you can manually leech a WEB-DL/HD file if you want it.
+            ok = predvd_automator.is_webdl_release(m)
+        if ok:
+            selected.append(m)
+
+    # Batch "already in Stremio?" lookup.
+    in_lib = await _library_imdb_ids({m.get("imdbId") for m in selected if m.get("imdbId")})
+
+    items = []
+    for m in selected:
+        key = predvd_automator._movie_key(m)
+        snapshot_doc = await db.col("predvd_snapshot").find_one({"_id": key}) if key else None
+        imdb = m.get("imdbId")
+        items.append(_serialize_feed_item(m, snapshot_doc, in_library=bool(imdb and str(imdb) in in_lib)))
+    return items, len(feed_items)
+
+
+@router.get("/predvd/feed", dependencies=[Depends(require_auth)])
+async def get_predvd_feed():
+    items, total = await _build_feed(predvd=True)
+    return {"ok": True, "count": len(items), "total_scraped": total, "items": items}
+
+
+@router.get("/predvd/digital", dependencies=[Depends(require_auth)])
+async def get_digital_feed():
+    """Official digital/WEB-DL/HD releases — MANUAL leech only (never auto)."""
+    items, total = await _build_feed(predvd=False)
+    return {"ok": True, "count": len(items), "total_scraped": total, "items": items}
 
 
 @router.get("/predvd/history", dependencies=[Depends(require_auth)])
@@ -740,28 +793,20 @@ async def trigger_manual_leech(request: Request):
     if not magnet_url.startswith("magnet:"):
         raise HTTPException(status_code=400, detail="Invalid magnet URL (must start with magnet:)")
 
-    settings = await predvd_automator.get_settings()
-    group_id = settings.get("group_id")
-    command_prefix = settings.get("command_prefix")
-
-    success, msg_info = await predvd_automator.send_leech_command(
-        group_id=group_id,
-        command_prefix=command_prefix,
-        magnet_url=magnet_url,
-        title=title,
-        quality=quality
-    )
-    if not success:
-        raise HTTPException(status_code=400, detail=msg_info)
+    # Goes through the indexer-priority gate: sends now when the indexer is
+    # idle, otherwise persists to a restart-safe queue and sends afterwards.
+    res = await predvd_automator.request_leech(magnet_url, title, quality, key=None)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("error", "Failed to send leech command"))
 
     await db.col("predvd_history").insert_one({
-        "action": "manual_leech_sent",
+        "action": "manual_leech_queued" if res.get("queued") else "manual_leech_sent",
         "title": title,
         "quality": quality,
         "magnet_url": magnet_url,
         "timestamp": time.time(),
-        "info": msg_info
+        "info": res.get("message", ""),
     })
 
-    return {"ok": True, "message": f"Leech command sent for {title}! ({msg_info})"}
+    return {"ok": True, "queued": res.get("queued", False), "message": res.get("message", "Leech request accepted.")}
 

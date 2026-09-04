@@ -102,5 +102,16 @@ PREDVD_COMMAND_PREFIX = os.getenv("PREDVD_COMMAND_PREFIX", "/qbleech")
 PREDVD_FEED_URL = os.getenv("PREDVD_FEED_URL", "")
 PREDVD_MIN_SIZE_MB = _int("PREDVD_MIN_SIZE_MB", 800)
 PREDVD_MAX_FILES_PER_MOVIE = _int("PREDVD_MAX_FILES_PER_MOVIE", 1)
-PREDVD_AUTO_PURGE_ON_WEBDL = os.getenv("PREDVD_AUTO_PURGE_ON_WEBDL", "true").lower() in ("true", "1", "yes")
 PREDVD_POLL_INTERVAL_MINUTES = _int("PREDVD_POLL_INTERVAL_MINUTES", 15)
+
+# --- PreDVD cleanup bot (optional but recommended) --------------------------
+# A SEPARATE bot (bot token) that is an ADMIN with "Delete messages" permission
+# in your PreDVD dump channel. When the official HD/WEB-DL arrives, the global
+# indexer's cleanup removes the old PreDVD DB row AND, via this bot, deletes the
+# old PreDVD message from the dump channel. The indexer userbot stays a plain
+# member of the dump channel (so it can index it). Leave blank to skip Telegram
+# message deletion (the DB row is still removed).
+PREDVD_CLEANUP_BOT_TOKEN = os.getenv("PREDVD_CLEANUP_BOT_TOKEN", "").strip()
+# The dump channel id (e.g. -1001234567890). ONLY this channel's messages are
+# ever deleted by the cleanup bot; regular media channels are never touched.
+PREDVD_DUMP_CHANNEL_ID = os.getenv("PREDVD_DUMP_CHANNEL_ID", "").strip()
