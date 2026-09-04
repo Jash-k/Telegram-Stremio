@@ -33,7 +33,9 @@ from .logger import LOGGER
 CHUNK_SIZE = 1024 * 1024     # 1 MiB
 STALL_TIMEOUT = 90.0         # abort if no chunk for this long
 MEDIA_SESSION_TIMEOUT = 20.0  # session setup must not hang
-_FLOOD_COOLDOWN = 30.0        # stay at parallelism=1 for this long after a flood
+# Stay at low parallelism for this long after a flood (was a flat 30s that
+# cratered speed after a single tiny flood). Configurable.
+_FLOOD_COOLDOWN = float(config.FLOOD_COOLDOWN_SECONDS or 12)
 _MAX_FLOOD_RETRIES = 30       # patient ceiling on consecutive floods (~minutes)
 
 # Adaptive flood state (module-wide for health display; the actual throttling
@@ -57,13 +59,42 @@ class ClientNotConnected(Exception):
     pass
 
 
+def _session_dead_error(err: str) -> bool:
+    """True for errors that mean the media TCP connection died (rebuild it)."""
+    low = (err or "").lower()
+    markers = (
+        "connection", "not connected", "closed", "broken pipe", "reset",
+        "eof", "transport", "session revoked", "unauthorized", "406",
+        "auth key", "rpc call failed due to network",
+    )
+    return any(m in low for m in markers)
+
+
+async def _safe_stop(session) -> None:
+    try:
+        await session.stop()
+    except Exception:
+        pass
+
+
 class Streamer:
     def __init__(self, client: Client):
         self.client = client
         self._session_lock = asyncio.Lock()
+        self._media_pool: dict = {}   # dc -> {"sessions": [Session...], "rr": int, "lock": Lock}
         self._cache: dict = {}
         self._last_flood = 0.0  # per-client: a user flood must not throttle a bot
+        # Pool size: bots tolerate more than a user session.
+        is_bot = bool(getattr(client, "bot_token", None))
+        self._pool_size = config.BOT_STREAM_MEDIA_SESSIONS if is_bot else config.STREAM_MEDIA_SESSIONS
         asyncio.create_task(self._prewarm_sessions())
+
+    def _pool(self, dc: int) -> dict:
+        p = self._media_pool.get(dc)
+        if p is None:
+            p = {"sessions": [], "rr": 0, "lock": asyncio.Lock()}
+            self._media_pool[dc] = p
+        return p
 
     # ------------------------------------------------------------------
     # File properties (cached FileId lookup)
@@ -138,39 +169,79 @@ class Streamer:
         return session
 
     async def _prewarm_sessions(self) -> None:
-        """Open media sessions for common DCs up front (timeout-bounded)."""
+        """Open ONE media session to each common DC up front (timeout-bounded).
+
+        The pool grows to the configured size lazily on demand, so startup
+        stays cheap and we never open sessions we don't need."""
         if self.client is None or not self.client.is_connected:
             return
         try:
-            test_mode = await self.client.storage.test_mode()
-            current_dc = await self.client.storage.dc_id()
+            await self.client.storage.dc_id()
         except Exception:
             return
-        for dc in (1, 2, 4, 5):
-            if dc in self.client.media_sessions or dc == current_dc:
-                continue
+        for dc in (2, 4):  # Telegram's biggest file DCs
             try:
-                session = await asyncio.wait_for(self._open_session(dc), timeout=MEDIA_SESSION_TIMEOUT)
-                self.client.media_sessions[dc] = session
+                await asyncio.wait_for(self._ensure_dc_session(dc), timeout=MEDIA_SESSION_TIMEOUT)
             except Exception:
                 continue
 
-    async def _get_media_session(self, fid: FileId) -> Session:
-        dc = fid.dc_id
-        if dc in self.client.media_sessions:
-            return self.client.media_sessions[dc]
-
-        async with self._session_lock:
-            if dc in self.client.media_sessions:
-                return self.client.media_sessions[dc]
+    async def _ensure_dc_session(self, dc: int) -> Session:
+        """Return a media session for dc, adding one to the pool if there's room."""
+        p = self._pool(dc)
+        async with p["lock"]:
+            live = [s for s in p["sessions"] if getattr(s, "connected", True)]
+            p["sessions"] = live
+            if live and len(live) >= self._pool_size:
+                # pick round-robin
+                s = live[p["rr"] % len(live)]
+                p["rr"] += 1
+                return s
+            if live:
+                s = live[p["rr"] % len(live)]
+                p["rr"] += 1
+                # Have at least one; try to grow the pool opportunistically.
+                if len(live) < self._pool_size:
+                    try:
+                        extra = await asyncio.wait_for(self._open_session(dc), timeout=MEDIA_SESSION_TIMEOUT)
+                        p["sessions"].append(extra)
+                        return extra
+                    except Exception:
+                        return s
+                return s
+            # No session yet — create one.
             try:
                 session = await asyncio.wait_for(self._open_session(dc), timeout=MEDIA_SESSION_TIMEOUT)
             except asyncio.TimeoutError:
                 raise ClientNotConnected(f"media session to DC {dc} timed out (account may be rate-limited)")
             except Exception as exc:
                 raise ClientNotConnected(f"media session to DC {dc} failed: {type(exc).__name__}")
-            self.client.media_sessions[dc] = session
+            p["sessions"].append(session)
             return session
+
+    async def _get_media_session(self, fid: FileId) -> Session:
+        dc = fid.dc_id
+        # Fast path: reuse an established pooled connection (no lock).
+        p = self._media_pool.get(dc)
+        if p and p["sessions"]:
+            live = p["sessions"]
+            if len(live) > 1:
+                s = live[p["rr"] % len(live)]
+                p["rr"] += 1
+                return s
+            return live[0]
+        return await self._ensure_dc_session(dc)
+
+    def _drop_dead_session(self, dc: int, sess: Session) -> None:
+        """Remove a dead media session so the pool rebuilds it on next use."""
+        p = self._media_pool.get(dc)
+        if not p:
+            return
+        p["sessions"] = [s for s in p["sessions"] if s is not sess]
+        try:
+            if sess is not None and getattr(sess, "connected", False):
+                asyncio.create_task(_safe_stop(sess))
+        except Exception:
+            pass
 
     @staticmethod
     async def _get_location(fid: FileId):
@@ -228,10 +299,15 @@ class Streamer:
             global _last_flood
             tries = 0
             flood_tries = 0
-            while tries < 3 and flood_tries < _MAX_FLOOD_RETRIES and not stop_event.is_set():
+            sess = None
+            while tries < 4 and flood_tries < _MAX_FLOOD_RETRIES and not stop_event.is_set():
+                # Grab a pooled media session each attempt so chunks spread across
+                # multiple TCP connections (higher per-DC throughput) and a dead
+                # session is automatically replaced with a fresh one.
                 try:
+                    sess = await self._get_media_session(fid)
                     r = await asyncio.wait_for(
-                        session.send(
+                        sess.send(
                             raw.functions.upload.GetFile(
                                 location=loc_box[0], offset=off, limit=chunk
                             )
@@ -244,7 +320,7 @@ class Streamer:
                     return seq, data
                 except asyncio.TimeoutError:
                     tries += 1
-                    await asyncio.sleep(min(0.5 * (2 ** (tries - 1)), 10.0))
+                    await asyncio.sleep(min(0.4 * (2 ** (tries - 1)), 6.0))
                 except Exception as e:
                     err = str(e)
                     if "FILE_REFERENCE" in err or "file_reference" in err.lower():
@@ -259,9 +335,15 @@ class Streamer:
                         wait = float(m.group(1)) + random.uniform(0.5, 2.0)
                         flood_tries += 1
                         await asyncio.sleep(wait)
+                    elif _session_dead_error(err):
+                        # Connection/session died mid-stream — drop it so the next
+                        # attempt opens a replacement from the pool, and retry.
+                        self._drop_dead_session(fid.dc_id, sess)
+                        tries += 1
+                        await asyncio.sleep(min(0.4 * (2 ** (tries - 1)), 6.0))
                     else:
                         tries += 1
-                        await asyncio.sleep(min(0.5 * (2 ** (tries - 1)), 10.0))
+                        await asyncio.sleep(min(0.4 * (2 ** (tries - 1)), 6.0))
             return seq, None
 
         async def producer():

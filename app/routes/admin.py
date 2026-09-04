@@ -39,6 +39,7 @@ from app.parser import (
     first_int,
     languages_from_filename,
     parse_combined_episodes,
+    source_from_filename,
 )
 from app.security import require_auth
 
@@ -230,7 +231,14 @@ async def wipe(_: bool = Depends(require_auth)):
 # Mapping (single + batch)
 # ---------------------------------------------------------------------------
 
-async def _map_file(file_doc, tmdb_id, media_type, is_video_song, details) -> None:
+async def _map_file(file_doc, tmdb_id, media_type, is_video_song, details, se_override=None) -> str:
+    """Map one file to a TMDb title.
+
+    se_override: optional dict {season, episode_start, episode_end, season_pack}
+    to force season/episode for TV files (ignores filename parsing).
+    Returns the new meta doc_id.
+    """
+    se_override = se_override or {}
     filename = file_doc.get("filename", "")
     try:
         parsed = PTN.parse(filename)
@@ -273,6 +281,20 @@ async def _map_file(file_doc, tmdb_id, media_type, is_video_song, details) -> No
 
     combined = parse_combined_episodes(filename)
     ep_start, ep_end = episode_bounds(parsed.get("episode"))
+    # Default S/E from filename (kept behaviour)…
+    season = first_int(combined["season"]) if combined else first_int(parsed.get("season"))
+    estart = first_int(combined["start"]) if combined else ep_start
+    eend = first_int(combined["end"]) if combined else ep_end
+    # …but a manual override (TV mapping) always wins.
+    if se_override:
+        season = first_int(se_override.get("season"))
+        if se_override.get("season_pack"):
+            estart = None
+            eend = None
+        else:
+            estart = first_int(se_override.get("episode_start"))
+            eend = first_int(se_override.get("episode_end")) or estart
+
     old_meta_id = file_doc.get("meta_id")
     await db.col("files").update_one(
         {"_id": file_doc["_id"]},
@@ -282,11 +304,15 @@ async def _map_file(file_doc, tmdb_id, media_type, is_video_song, details) -> No
             "size": file_doc.get("size", 0),
             "size_str": file_doc.get("size_str", ""),
             "quality": parsed.get("resolution", "HD"),
+            "codec": parsed.get("codec") or file_doc.get("codec", ""),
+            "audio": parsed.get("audio") or file_doc.get("audio", ""),
+            "resolution": parsed.get("resolution") or file_doc.get("resolution", ""),
+            "source": file_doc.get("source") or source_from_filename(filename),
             "chat_id": int(file_doc["chat_id"]),
             "message_id": int(file_doc["message_id"]),
-            "season": first_int(combined["season"]) if combined else first_int(parsed.get("season")),
-            "episode_start": first_int(combined["start"]) if combined else ep_start,
-            "episode_end": first_int(combined["end"]) if combined else ep_end,
+            "season": season,
+            "episode_start": estart,
+            "episode_end": eend,
             "indexed_at": time.time(),
         }},
         upsert=True,
@@ -294,6 +320,7 @@ async def _map_file(file_doc, tmdb_id, media_type, is_video_song, details) -> No
     if old_meta_id and old_meta_id != doc_id:
         if not await db.col("files").find_one({"meta_id": old_meta_id}, {"_id": 1}):
             await db.col("meta").delete_one({"_id": old_meta_id})
+    return doc_id
 
 
 async def _resolve_tmdb(input_id: str, media_type: str):
@@ -366,6 +393,14 @@ async def batch_map(payload: dict, _: bool = Depends(require_auth)):
     if not details:
         return {"status": "error", "message": "Invalid TMDb ID"}
 
+    # Season / whole-season-pack applies to the whole batch; a specific episode
+    # number only makes sense for a single file (it's applied below).
+    se = {
+        "season": payload.get("season"),
+        "season_pack": bool(payload.get("season_pack")),
+        "episode_start": payload.get("episode_start"),
+        "episode_end": payload.get("episode_end"),
+    }
     success = 0
     for file_id in file_ids:
         fdoc = await db.col("unindexed").find_one({"_id": file_id})
@@ -373,10 +408,12 @@ async def batch_map(payload: dict, _: bool = Depends(require_auth)):
             fdoc = await db.col("files").find_one({"_id": file_id})
         if not fdoc:
             continue
-        await _map_file(fdoc, tmdb_id, media_type, is_video_song, details)
+        # Episode override only for a single-file mapping; else filename parsing.
+        this_se = se if (len(file_ids) == 1 or se["season_pack"]) else {"season": se["season"], "season_pack": se["season_pack"]}
+        await _map_file(fdoc, tmdb_id, media_type, is_video_song, details, se_override=this_se)
         await db.col("unindexed").delete_one({"_id": file_id})
         success += 1
-    return {"status": "success", "count": success}
+    return {"status": "success", "count": success, "meta_id": f"song:tmdb:{tmdb_id}" if is_video_song else f"tmdb:{tmdb_id}"}
 
 
 @router.post("/files/{file_id}/map")
@@ -397,9 +434,109 @@ async def single_map(file_id: str, payload: dict, _: bool = Depends(require_auth
     fdoc = await db.col("unindexed").find_one({"_id": file_id}) or await db.col("files").find_one({"_id": file_id})
     if not fdoc:
         return {"status": "error", "message": "File not found"}
-    await _map_file(fdoc, resolved, media_type, is_video_song, details)
+    se = {
+        "season": payload.get("season"),
+        "season_pack": bool(payload.get("season_pack")),
+        "episode_start": payload.get("episode_start"),
+        "episode_end": payload.get("episode_end"),
+    }
+    meta_id = await _map_file(fdoc, resolved, media_type, is_video_song, details, se_override=se)
     await db.col("unindexed").delete_one({"_id": file_id})
+    if media_type == "series" and not is_video_song:
+        try:
+            from app.cleanup import clean_meta_files
+            await clean_meta_files(meta_id)
+        except Exception:
+            pass
+    return {"status": "success", "meta_id": meta_id}
+
+
+@router.post("/files/{file_id}/se")
+async def set_file_se(file_id: str, payload: dict, _: bool = Depends(require_auth)):
+    """Quick season/episode correction on an ALREADY-indexed file (no TMDb refetch)."""
+    fdoc = await db.col("files").find_one({"_id": file_id})
+    if not fdoc:
+        return {"status": "error", "message": "File not found"}
+    update = {}
+    season = first_int(payload.get("season"))
+    season_pack = bool(payload.get("season_pack"))
+    if season is not None:
+        update["season"] = season
+    if season_pack:
+        update["episode_start"] = None
+        update["episode_end"] = None
+    else:
+        e_start = first_int(payload.get("episode_start"))
+        e_end = first_int(payload.get("episode_end"))
+        if e_start is not None:
+            update["episode_start"] = e_start
+            update["episode_end"] = e_end if e_end is not None else e_start
+    if not update:
+        return {"status": "error", "message": "Nothing to update"}
+    await db.col("files").update_one({"_id": file_id}, {"$set": update})
+    from app.cache import invalidate_all
+    invalidate_all()
     return {"status": "success"}
+
+
+@router.post("/meta/{meta_id}/remap")
+async def remap_title(meta_id: str, request: Request, _: bool = Depends(require_auth)):
+    """Re-point an entire wrongly-mapped title (all its files) to the correct
+    TMDb entry. Rebuilds metadata, moves every file, merges if the target
+    title already exists, and deletes the old title. Works for movies, series,
+    and video songs (song: prefix preserved when is_video_song / was a song)."""
+    try:
+        body = await request.json() or {}
+    except Exception:
+        body = {}
+    input_id = str(body.get("tmdb_id", "")).strip()
+    media_type = body.get("media_type")  # auto-detected from the old record if None
+    is_video_song = bool(body.get("is_video_song")) or str(meta_id).startswith("song:")
+
+    old_meta = await db.col("meta").find_one({"_id": meta_id})
+    if not old_meta:
+        return {"status": "error", "message": "Title not found"}
+    if not media_type:
+        media_type = old_meta.get("media_type", "movie")
+
+    files = await db.col("files").find({"meta_id": meta_id}).to_list(None)
+    if not files:
+        return {"status": "error", "message": "No files under this title to remap"}
+
+    resolved = await _resolve_tmdb(input_id, media_type)
+    if not resolved:
+        return {"status": "error", "message": "Could not resolve TMDb ID"}
+    details = await tmdb_details("tv" if media_type == "series" else "movie", resolved)
+    if not details:
+        return {"status": "error", "message": "Invalid TMDb ID"}
+
+    new_id = f"song:tmdb:{resolved}" if is_video_song else f"tmdb:{resolved}"
+    if new_id == meta_id:
+        return {"status": "error", "message": "That title is the same mapping."}
+
+    # Move every file (reuse _map_file so metadata + S/E + source are rebuilt).
+    moved = 0
+    for fdoc in files:
+        await _map_file(fdoc, resolved, media_type, is_video_song, details)
+        await db.col("unindexed").delete_one({"_id": fdoc["_id"]})
+        moved += 1
+
+    # _map_file already re-upserted the new meta; now drop the old wrong title
+    # (and any orphaned doc if no files reference it after a merge).
+    await db.col("meta").delete_one({"_id": meta_id})
+
+    # Best-of-3 / predvd cleanup on the merged title, then refresh caches.
+    try:
+        if media_type == "series" or not is_video_song:
+            from app.cleanup import clean_meta_files
+            await clean_meta_files(new_id)
+    except Exception as exc:
+        LOGGER.warning("post-remap cleanup: %s", exc)
+    from app.cache import invalidate_all
+    invalidate_all()
+
+    title = details.get("title") or details.get("name") or ""
+    return {"status": "success", "new_meta_id": new_id, "moved": moved, "title": title}
 
 
 # ---------------------------------------------------------------------------
@@ -682,6 +819,20 @@ async def update_predvd_settings(request: Request):
     return {"ok": True, "settings": saved}
 
 
+async def _fetch_feed_cached(settings_feed_url) -> list:
+    """Cache the external movies.json fetch for ~2 min (instant tab re-opens)."""
+    import time as _t
+    now = _t.monotonic()
+    cache = getattr(_fetch_feed_cached, "_cache", None)
+    url = settings_feed_url or ""
+    if cache and cache.get("url") == url and now - cache["ts"] < 120 and cache["items"] is not None:
+        return cache["items"]
+    from app import predvd_automator
+    items = await predvd_automator.fetch_feed(settings_feed_url)
+    _fetch_feed_cached._cache = {"url": url, "ts": now, "items": items}
+    return items
+
+
 async def _library_imdb_ids(external_ids: set) -> set:
     """Which of the given IMDb ids already correspond to a title in GlobalDB."""
     ids = {str(i) for i in external_ids if i}
@@ -718,45 +869,59 @@ def _serialize_feed_item(m: dict, snapshot_doc, in_library: bool) -> dict:
     }
 
 
-async def _build_feed(predvd: bool):
+async def _build_feed(predvd: bool, page: int = 1, per_page: int = 30):
     from app import predvd_automator
     settings = await predvd_automator.get_settings()
-    feed_items = await predvd_automator.fetch_feed(settings.get("feed_url"))
+    # Network fetch is cached; classification is cheap.
+    feed_items = await _fetch_feed_cached(settings.get("feed_url"))
 
     selected = []
     for m in feed_items:
         if predvd:
             ok = predvd_automator.is_tamil_release(m) and predvd_automator.is_predvd_release(m)
         else:
-            # Digital tab: show ALL official digital/HD releases (any language),
-            # so you can manually leech a WEB-DL/HD file if you want it.
+            # Digital tab: show ALL official digital/HD releases (any language).
             ok = predvd_automator.is_webdl_release(m)
         if ok:
             selected.append(m)
 
-    # Batch "already in Stremio?" lookup.
-    in_lib = await _library_imdb_ids({m.get("imdbId") for m in selected if m.get("imdbId")})
+    total_sel = len(selected)
+    start = (max(1, page) - 1) * per_page
+    page_items = selected[start:start + per_page]
+
+    # Batch "already in Stremio?" lookup (this page only).
+    in_lib = await _library_imdb_ids({m.get("imdbId") for m in page_items if m.get("imdbId")})
 
     items = []
-    for m in selected:
+    for m in page_items:
         key = predvd_automator._movie_key(m)
         snapshot_doc = await db.col("predvd_snapshot").find_one({"_id": key}) if key else None
         imdb = m.get("imdbId")
         items.append(_serialize_feed_item(m, snapshot_doc, in_library=bool(imdb and str(imdb) in in_lib)))
-    return items, len(feed_items)
+
+    return {
+        "items": items,
+        "count": total_sel,
+        "total_scraped": len(feed_items),
+        "page": page,
+        "per_page": per_page,
+        "has_more": start + per_page < total_sel,
+    }
 
 
 @router.get("/predvd/feed", dependencies=[Depends(require_auth)])
-async def get_predvd_feed():
-    items, total = await _build_feed(predvd=True)
-    return {"ok": True, "count": len(items), "total_scraped": total, "items": items}
+async def get_predvd_feed(page: int = 1):
+    result = await _build_feed(predvd=True, page=page)
+    result["ok"] = True
+    return result
 
 
 @router.get("/predvd/digital", dependencies=[Depends(require_auth)])
-async def get_digital_feed():
+async def get_digital_feed(page: int = 1):
     """Official digital/WEB-DL/HD releases — MANUAL leech only (never auto)."""
-    items, total = await _build_feed(predvd=False)
-    return {"ok": True, "count": len(items), "total_scraped": total, "items": items}
+    result = await _build_feed(predvd=False, page=page)
+    result["ok"] = True
+    return result
 
 
 @router.get("/predvd/history", dependencies=[Depends(require_auth)])

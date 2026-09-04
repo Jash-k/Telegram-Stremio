@@ -90,6 +90,16 @@ STREAM_PREFETCH = _int("STREAM_PREFETCH", 4)        # chunks buffered ahead
 BOT_STREAM_PARALLELISM = _int("BOT_STREAM_PARALLELISM", 4)
 BOT_STREAM_PREFETCH = _int("BOT_STREAM_PREFETCH", 8)
 
+# Media-session POOL per datacenter. Telegram throttles GetFile throughput per
+# MTProto connection/auth flow, so spreading parallel chunks across 2-3 media
+# sessions to the SAME datacenter meaningfully raises throughput — especially
+# for private channels (which only a user session can read). Cheap on RAM.
+STREAM_MEDIA_SESSIONS = _int("STREAM_MEDIA_SESSIONS", 3)
+BOT_STREAM_MEDIA_SESSIONS = _int("BOT_STREAM_MEDIA_SESSIONS", 4)
+# After a flood, stay at low parallelism for this many seconds (was a flat 30s
+# that cratered speed after a single tiny flood).
+FLOOD_COOLDOWN_SECONDS = _int("FLOOD_COOLDOWN_SECONDS", 12)
+
 # Self-ping interval (minutes) to defeat Koyeb scale-to-zero.
 KEEPALIVE_MINUTES = _int("KEEPALIVE_MINUTES", 15)
 

@@ -345,7 +345,10 @@
 <div id="view-meta-files" style="display:none;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
         <h3 style="font-size:1.1rem; font-weight:600;" id="meta-files-title">Mapped Files</h3>
-        <button onclick="closeMetaFilesView()" class="btn btn-ghost"><i class="fa-solid fa-arrow-left"></i> Back</button>
+        <div style="display:flex; gap:8px;">
+            <button id="btn-title-remap" class="btn btn-primary" style="padding:0.4rem 0.8rem; font-size:0.85rem;" onclick="doTitleRemapFromFiles()"><i class="fa-solid fa-repeat"></i> Remap Title</button>
+            <button onclick="closeMetaFilesView()" class="btn btn-ghost"><i class="fa-solid fa-arrow-left"></i> Back</button>
+        </div>
     </div>
     <div class="table-wrap">
         <table>
@@ -481,7 +484,7 @@
 
         <div style="margin-bottom:15px;">
             <label class="s-label">Media Type</label>
-            <select id="map-media-type" class="s-input" onchange="clearMapSelection(); performTmdbSearch();">
+            <select id="map-media-type" class="s-input" onchange="clearMapSelection(); refreshSeVisibility(); performTmdbSearch();">
                 <option value="movie">Movie</option>
                 <option value="series">TV Show</option>
             </select>
@@ -518,16 +521,58 @@
             </div>
         </div>
 
-        <div style="margin-bottom:20px;">
+        <!-- Season / Episode overrides (TV file mapping only) -->
+        <div id="map-se-wrap" style="display:none; margin-bottom:15px; padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--bg);">
+            <div style="font-size:0.85rem; font-weight:600; margin-bottom:8px;"><i class="fa-solid fa-tv"></i> Season / Episode (optional — overrides filename)</div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:10px;">
+                <div>
+                    <label class="s-label">Season #</label>
+                    <input type="number" id="map-season" min="1" class="s-input" placeholder="auto">
+                </div>
+                <div>
+                    <label class="s-label">Episode #</label>
+                    <input type="number" id="map-ep-start" min="1" class="s-input" placeholder="auto">
+                </div>
+                <div>
+                    <label class="s-label">Episode to (range)</label>
+                    <input type="number" id="map-ep-end" min="1" class="s-input" placeholder="single">
+                </div>
+            </div>
+            <label style="display:flex; align-items:center; gap:8px; font-size:0.85rem; cursor:pointer; margin-top:10px;">
+                <input type="checkbox" id="map-season-pack" onchange="toggleSeasonPack()">
+                <span>Whole season pack (file contains the full season)</span>
+            </label>
+        </div>
+
+        <div style="margin-bottom:20px;" id="map-videosong-wrap">
             <label style="display: flex; align-items: center; gap: 8px; font-size: 0.9rem; cursor: pointer;">
                 <input type="checkbox" id="map-is-video-song" style="accent-color: var(--primary); transform: scale(1.1);">
                 Map as Video Song (Creates a separate catalog for songs)
             </label>
         </div>
-        
+
         <div style="display:flex; gap:10px; justify-content:flex-end;">
             <button class="btn btn-ghost" onclick="hideMapModal()">Cancel</button>
             <button class="btn btn-primary" id="btn-submit-map" onclick="submitMap()">Link Metadata</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal for Season/Episode quick-edit (already-indexed file) -->
+<div id="se-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(5px); z-index:9999; align-items:center; justify-content:center;">
+    <div class="settings-card" style="width:100%; max-width:420px; margin:20px;">
+        <h3 style="margin-bottom:12px; font-weight:bold;">Edit Season / Episode</h3>
+        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:12px;">
+            <div><label class="s-label">Season</label><input type="number" id="se-season" min="1" class="s-input"></div>
+            <div><label class="s-label">Episode</label><input type="number" id="se-ep-start" min="1" class="s-input"></div>
+            <div><label class="s-label">Ep. to (range)</label><input type="number" id="se-ep-end" min="1" class="s-input"></div>
+        </div>
+        <label style="display:flex; align-items:center; gap:8px; font-size:0.88rem; cursor:pointer; margin-bottom:18px;">
+            <input type="checkbox" id="se-season-pack"> <span>Whole season pack</span>
+        </label>
+        <div style="display:flex; gap:10px; justify-content:flex-end;">
+            <button class="btn btn-ghost" onclick="closeSeEdit()">Cancel</button>
+            <button class="btn btn-primary" onclick="submitSeEdit()">Save</button>
         </div>
     </div>
 </div>
@@ -1028,8 +1073,9 @@ async function loadCatalogPage() {
                         </div>
                     </td>
                     <td>${item.year || '-'}</td>
-                    <td><a href="#" onclick="openMetaFilesView('${item._id}', '${escapeHtml(item.title)}'); return false;" style="color:var(--primary); font-weight:bold; text-decoration:underline;">${item.file_count || 0} files</a></td>
-                    <td>
+                        <td><a href="#" onclick="openMetaFilesView('${item._id}', '${escapeHtml(item.title)}', '${item.media_type || 'movie'}'); return false;" style="color:var(--primary); font-weight:bold; text-decoration:underline;">${item.file_count || 0} files</a></td>
+                    <td style="white-space:nowrap;">
+                        <button class="btn btn-ghost" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" title="This title was matched wrong — remap it to the correct movie/show" onclick="openTitleRemap('${item._id}', ${JSON.stringify(item.title).replace(/'/g, '&#39;')}, '${item.media_type || 'movie'}')"><i class="fa-solid fa-repeat"></i> Remap</button>
                         <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteMeta('${item._id}')">Remove</button>
                     </td>
                 </tr>`;
@@ -1045,12 +1091,21 @@ function changePage(delta) {
 
 /* --- Meta Files Drilldown View --- */
 let currentMetaId = null;
+let currentMetaType = 'movie';
+let currentMetaTitle = '';
 
-async function openMetaFilesView(metaId, metaTitle) {
+async function openMetaFilesView(metaId, metaTitle, mediaType) {
     currentMetaId = metaId;
+    currentMetaTitle = metaTitle || '';
+    currentMetaType = (mediaType === 'series') ? 'series' : 'movie';
     switchView('meta-files');
     document.getElementById('meta-files-title').textContent = `Files for: ${metaTitle}`;
     await loadMetaFiles();
+}
+
+function doTitleRemapFromFiles() {
+    if (!currentMetaId) return;
+    openTitleRemap(currentMetaId, currentMetaTitle, currentMetaType);
 }
 
 function closeMetaFilesView() {
@@ -1085,7 +1140,8 @@ async function loadMetaFiles() {
                     <td><div style="max-width:350px; word-break:break-all; font-size:0.9rem; font-weight:600;">${escFilename}</div></td>
                     <td>${item.size_str || '0 MB'}</td>
                     <td><span class="badge" style="background:var(--surface-3);color:var(--text);">${seInfo}</span></td>
-                    <td>
+                    <td style="white-space:nowrap;">
+                        <button class="btn btn-ghost" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" title="Correct season/episode" onclick="openSeEdit('${item._id}', ${item.season ?? 'null'}, ${item.episode_start ?? 'null'}, ${item.episode_end ?? 'null'})"><i class="fa-solid fa-pen"></i> S/E</button>
                         <button class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="deleteGlobalFile('${item._id}', true)"><i class="fa-solid fa-trash"></i></button>
                     </td>
                 </tr>`;
@@ -1191,6 +1247,107 @@ function showMapModal(fileId, filename, context) {
     openMapModal(filename, filename);
 }
 
+// --- Title Remap + S/E edit mode state ---
+let remapMetaId = null;      // when set, submitMap() performs a title-level remap
+let remapMetaType = 'movie'; // series|movie (used to toggle S/E panel in title remap)
+
+// Reset season/episode override inputs.
+function resetSeInputs() {
+    ['map-season', 'map-ep-start', 'map-ep-end'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+    });
+    const pack = document.getElementById('map-season-pack');
+    if (pack) pack.checked = false;
+    toggleSeasonPack();
+}
+
+function toggleSeasonPack() {
+    const pack = document.getElementById('map-season-pack');
+    const isPack = pack && pack.checked;
+    const disable = id => { const el = document.getElementById(id); if (el) el.disabled = isPack; };
+    disable('map-ep-start');
+    disable('map-ep-end');
+}
+
+// Show/hide the season/episode panel based on media type + mode.
+function refreshSeVisibility() {
+    const wrap = document.getElementById('map-se-wrap');
+    if (!wrap) return;
+    const mt = document.getElementById('map-media-type');
+    const isSeries = mt && mt.value === 'series';
+    // S/E overrides only make sense for single/series FILE mapping (not title remap).
+    wrap.style.display = (isSeries && !remapMetaId) ? 'block' : 'none';
+}
+
+// Quick season/episode edit modal for an already-indexed file.
+let seEditFileId = null;
+function openSeEdit(fileId, season, epStart, epEnd) {
+    seEditFileId = fileId;
+    document.getElementById('se-season').value = season ?? '';
+    document.getElementById('se-ep-start').value = epStart ?? '';
+    document.getElementById('se-ep-end').value = (epEnd && epEnd !== epStart) ? epEnd : '';
+    document.getElementById('se-season-pack').checked = (season && (epStart === null || epStart === undefined));
+    document.getElementById('se-modal').style.display = 'flex';
+}
+function closeSeEdit() {
+    document.getElementById('se-modal').style.display = 'none';
+    seEditFileId = null;
+}
+async function submitSeEdit() {
+    if (!seEditFileId) return;
+    const season = document.getElementById('se-season').value;
+    const epStart = document.getElementById('se-ep-start').value;
+    const epEnd = document.getElementById('se-ep-end').value;
+    const seasonPack = document.getElementById('se-season-pack').checked;
+    const payload = { season_pack: seasonPack };
+    if (season) payload.season = parseInt(season, 10);
+    if (!seasonPack && epStart) {
+        payload.episode_start = parseInt(epStart, 10);
+        if (epEnd) payload.episode_end = parseInt(epEnd, 10);
+    }
+    try {
+        const res = await fetch(`/api/admin/global/files/${seEditFileId}/se`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showNotification('Season/Episode updated', 'success');
+            closeSeEdit();
+            if (currentActiveCallback) currentActiveCallback();
+            if (currentMetaId) await loadMetaFiles();
+        } else {
+            alert(data.message || 'Update failed');
+        }
+    } catch (e) {
+        alert('Network error: ' + e.message);
+    }
+}
+
+// Title-level remap: move EVERY file under a wrongly-mapped title to the correct
+// TMDb entry. Reuses the search picker modal (season/episode hidden).
+function openTitleRemap(metaId, title, mediaType) {
+    remapMetaId = metaId;
+    remapMetaType = (mediaType === 'series') ? 'series' : 'movie';
+    isBatchMap = false;
+    mappingFileId = null;
+    document.getElementById('map-filename').textContent = `Remap title: ${title}`;
+    const mt = document.getElementById('map-media-type');
+    if (mt) mt.value = remapMetaType;
+    const wasSong = String(metaId).startsWith('song:');
+    document.getElementById('map-is-video-song').checked = wasSong;
+    resetSeInputs();
+    refreshSeVisibility();
+    document.getElementById('map-search-year').value = '';
+    document.getElementById('map-tmdb-id-manual').value = '';
+    document.getElementById('map-manual-wrap').style.display = 'none';
+    clearMapSelection();
+    document.getElementById('map-search-query').value = (title || '').replace(/\s*\(Video Songs\)\s*$/i, '');
+    document.getElementById('map-modal').style.display = 'flex';
+    document.getElementById('btn-submit-map').textContent = 'Remap Title';
+    performTmdbSearch();
+}
+
 // Guess a clean search query from a raw filename (strip extension, quality
 // tags, codecs, group tags, brackets, dots/underscores) so the picker starts
 // pre-populated instead of blank.
@@ -1209,12 +1366,17 @@ function guessSearchQueryFromFilename(filename) {
 let mapModalSelected = null; // { tmdb_id, title, poster }
 
 function openMapModal(displayText, filenameForGuess) {
+    remapMetaId = null;
+    document.getElementById('btn-submit-map').textContent = 'Link Metadata';
     document.getElementById('map-filename').textContent = displayText;
     document.getElementById('map-search-year').value = '';
     document.getElementById('map-tmdb-id-manual').value = '';
     document.getElementById('map-manual-wrap').style.display = 'none';
     document.getElementById('map-manual-toggle').textContent = 'Or enter a TMDB ID / IMDb link manually';
+    document.getElementById('map-is-video-song').checked = false;
     clearMapSelection();
+    resetSeInputs();
+    refreshSeVisibility();
     const guess = guessSearchQueryFromFilename(filenameForGuess || '');
     document.getElementById('map-search-query').value = guess;
     document.getElementById('map-modal').style.display = 'flex';
@@ -1307,6 +1469,8 @@ async function performTmdbSearch() {
 function hideMapModal() {
     document.getElementById('map-modal').style.display = 'none';
     mappingFileId = null;
+    remapMetaId = null;
+    document.getElementById('btn-submit-map').textContent = 'Link Metadata';
     clearMapSelection();
 }
 async function submitMap() {
@@ -1317,36 +1481,77 @@ async function submitMap() {
     // Manual entry (if filled in) takes priority over a search selection.
     const tmdb_id = manualId || (mapModalSelected ? String(mapModalSelected.tmdb_id) : '');
     if (!tmdb_id) return alert("Search and pick a title above, or enter a TMDB ID / link manually.");
-    
+
     const btn = document.getElementById('btn-submit-map');
     btn.disabled = true;
-    btn.textContent = 'Mapping...';
-    
-    let res;
-    if (isBatchMap) {
-        res = await fetch(`/api/admin/global/files/batch_map`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ file_ids: mappingFileId, tmdb_id: tmdb_id, media_type: media_type, is_video_song: is_video_song })
-        });
-    } else {
-        res = await fetch(`/api/admin/global/files/batch_map`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ file_ids: [mappingFileId], tmdb_id: tmdb_id, media_type: media_type, is_video_song: is_video_song })
-        });
+    btn.textContent = remapMetaId ? 'Remapping...' : 'Mapping...';
+
+    // ---- Title-level remap: move EVERY file under this title ----
+    if (remapMetaId) {
+        try {
+            const res = await fetch(`/api/admin/global/meta/${encodeURIComponent(remapMetaId)}/remap`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ tmdb_id: tmdb_id, media_type: media_type, is_video_song: is_video_song })
+            });
+            const data = await res.json();
+            btn.disabled = false;
+            btn.textContent = 'Remap Title';
+            if (data.status === 'success') {
+                showNotification(`Remapped ${data.moved} file(s) → ${data.title}`, 'success');
+                hideMapModal();
+                if (currentActiveCallback) currentActiveCallback();
+                if (currentMetaId) await loadMetaFiles();
+                loadUnindexedBadge();
+            } else {
+                alert("Error: " + data.message);
+            }
+        } catch (e) {
+            btn.disabled = false;
+            btn.textContent = 'Remap Title';
+            alert("Network error: " + e.message);
+        }
+        return;
     }
-    
-    const data = await res.json();
-    btn.disabled = false;
-    btn.textContent = 'Link Metadata';
-    
-    if (data.status === 'success') {
-        hideMapModal();
-        if(currentActiveCallback) currentActiveCallback();
-        loadUnindexedBadge();
-    } else {
-        alert("Error: " + data.message);
+
+    // ---- File-level link/batch map, with optional S/E overrides (TV) ----
+    const season = document.getElementById('map-season').value;
+    const epStart = document.getElementById('map-ep-start').value;
+    const epEnd = document.getElementById('map-ep-end').value;
+    const seasonPack = document.getElementById('map-season-pack').checked;
+    const payload = { tmdb_id, media_type, is_video_song };
+    if (media_type === 'series') {
+        if (season) payload.season = parseInt(season, 10);
+        payload.season_pack = seasonPack;
+        if (!seasonPack && epStart) {
+            payload.episode_start = parseInt(epStart, 10);
+            if (epEnd) payload.episode_end = parseInt(epEnd, 10);
+        }
+    }
+    payload.file_ids = isBatchMap ? mappingFileId : [mappingFileId];
+
+    try {
+        const res = await fetch(`/api/admin/global/files/batch_map`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        btn.disabled = false;
+        btn.textContent = 'Link Metadata';
+        if (data.status === 'success') {
+            hideMapModal();
+            showNotification(`Mapped ${data.count || ''} file(s)`, 'success');
+            if (currentActiveCallback) currentActiveCallback();
+            if (currentMetaId) await loadMetaFiles();
+            loadUnindexedBadge();
+        } else {
+            alert("Error: " + data.message);
+        }
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = 'Link Metadata';
+        alert("Network error: " + e.message);
     }
 }
 
@@ -1583,69 +1788,9 @@ async function loadPreDVD() {
         document.getElementById('predvd-stat-baseline').innerText = statusRes.snapshot_count || 0;
         document.getElementById('predvd-stat-history').innerText = statusRes.history_count || 0;
         document.getElementById('predvd-stat-feed-count').innerText = feedRes.count || 0;
-
-        const totalScraped = feedRes.total_scraped || 0;
-        document.getElementById('predvd-feed-status-badge').innerText = `${feedRes.count || 0} Tamil PreDVDs found (${totalScraped} total in feed)`;
-
-        // Render Feed Table
-        const feedTbody = document.getElementById('predvd-feed-tbody');
-        const items = feedRes.items || [];
-        window.__predvdFeedItems = items;
-
-        if (items.length === 0) {
-            feedTbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:2rem; color:var(--text-sec);">No Tamil PreDVD releases currently in feed.</td></tr>';
-        } else {
-            feedTbody.innerHTML = items.map((item, idx) => {
-                const poster = item.poster || 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=100';
-                const langs = (item.languages || ['Tamil']).join(', ');
-                const minSize = Number(s.min_size_mb || 1000);
-                
-                // All magnet qualities rendered as clickable leech buttons
-                const qualitiesList = (item.qualities || []).filter(q => String(q.url || '').startsWith('magnet:'));
-
-                const qualityButtons = qualitiesList.map((q, qIdx) => {
-                    const qBtnId = `btn-q-${idx}-${qIdx}`;
-                    const sizeStr = q.size || '';
-                    const match = sizeStr.match(/([\d.]+)\s*(GB|MB|GiB|MiB)/i);
-                    let sizeMb = 0;
-                    if (match) {
-                        const val = parseFloat(match[1]);
-                        sizeMb = match[2].toUpperCase().includes('GB') ? val * 1024 : val;
-                    }
-                    const isLarge = sizeMb >= minSize;
-                    const borderCol = isLarge ? 'rgba(244,63,94,0.4)' : 'rgba(255,255,255,0.12)';
-                    const bgCol = isLarge ? 'rgba(244,63,94,0.15)' : 'rgba(255,255,255,0.05)';
-                    const textCol = isLarge ? '#f43f5e' : 'var(--text-sec)';
-                    const highlightGlow = isLarge ? 'font-weight:700;' : '';
-
-                    return `
-                        <button id="${qBtnId}" onclick="triggerDirectQualityLeech(${idx}, ${qIdx}, '${qBtnId}')" style="display:inline-flex; align-items:center; gap:5px; background:${bgCol}; color:${textCol}; border:1px solid ${borderCol}; border-radius:6px; padding:4px 8px; font-size:0.75rem; ${highlightGlow} cursor:pointer; margin:2px 4px 2px 0; transition:all 0.15s ease;" title="Click to leech this exact ${escapeHtml(q.quality || 'PreDVD')} (${sizeStr}) file">
-                            <i class="fa-solid fa-cloud-arrow-down" style="font-size:0.7rem;"></i>
-                            <span>${escapeHtml(q.quality || 'PreDVD')}</span>
-                            <span style="font-weight:normal; opacity:0.85;">(${sizeStr || 'N/A'})</span>
-                            <span style="font-size:0.68rem; color:#22c55e;">● ${q.seeders || 0}s</span>
-                        </button>
-                    `;
-                }).join('') || '<span style="font-size:0.75rem; color:var(--text-sec);">No magnet links found</span>';
-
-                let statusBadge = '<span class="badge" style="background:#0ea5e9; color:white;">New - Eligible</span>';
-                if (item.is_baseline) {
-                    statusBadge = '<span class="badge" style="background:rgba(255,255,255,0.1); color:var(--text-sec);">Baseline (Ignored)</span>';
-                } else if (item.leeched) {
-                    statusBadge = '<span class="badge" style="background:#22c55e; color:white;">Leeched ✓</span>';
-                }
-
-                return `
-                    <tr>
-                        <td><img src="${poster}" style="width:36px; height:52px; object-fit:cover; border-radius:4px; background:var(--bg);" onerror="this.src='https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=100'"></td>
-                        <td><strong>${escapeHtml(item.title || 'Untitled')}</strong> <span style="font-size:0.8rem; color:var(--text-sec);">(${item.year || '2026'})</span></td>
-                        <td><span style="font-size:0.8rem;">${escapeHtml(langs)}</span></td>
-                        <td style="line-height:1.8;">${qualityButtons}</td>
-                        <td style="text-align:right;">${statusBadge}</td>
-                    </tr>
-                `;
-            }).join('');
-        }
+        document.getElementById('predvd-feed-status-badge').innerText = `${feedRes.count || 0} Tamil PreDVDs (${feedRes.total_scraped || 0} total in feed)`;
+        // Feed table itself loads lazily (paginated infinite scroll).
+        loadPreDVDFeed();
 
         // Render History Table
         const historyTbody = document.getElementById('predvd-history-tbody');
@@ -1758,7 +1903,7 @@ async function triggerDirectQualityLeech(itemIdx, qIdx, btnId) {
         return;
     }
 
-    const qualitiesList = (item.qualities || []).filter(q => String(q.url || '').startsWith('magnet:'));
+    const qualitiesList = item._magnets || (item.qualities || []).filter(q => String(q.url || '').startsWith('magnet:'));
     const q = qualitiesList[qIdx];
     if (!q || !q.url) {
         showNotification('Invalid magnet link for selected quality', 'error');
@@ -1826,62 +1971,124 @@ async function triggerDirectQualityLeech(itemIdx, qIdx, btnId) {
 // Digital Releases tab (official WEB-DL/HD — manual leech only)
 // ---------------------------------------------------------------------------
 window.__digitalFeedItems = [];
+const _feedState = {
+    digital: { page: 0, loading: false, hasMore: true, items: [] },
+    predvd:   { page: 0, loading: false, hasMore: true, items: [] },
+};
+const FALLBACK_POSTER = 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=100';
+const FALLBACK = 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=100';
 
-async function loadDigital() {
-    const tbody = document.getElementById('digital-feed-tbody');
+function qualityButtonHTML(item, baseIdx, qIdx, opts) {
+    const o = opts || {};
+    const q = item._magnets[qIdx];
+    const btnId = `btn-${baseIdx}-${qIdx}`;
+    const sizeStr = q.size || '';
+    const bg = o.predvd ? 'rgba(244,63,94,0.12)' : 'rgba(34,197,94,0.10)';
+    const col = o.predvd ? '#f43f5e' : '#22c55e';
+    const bd = o.predvd ? 'rgba(244,63,94,0.35)' : 'rgba(34,197,94,0.35)';
+    const fn = o.predvd ? 'triggerDirectQualityLeech' : 'triggerDigitalQualityLeech';
+    return `
+        <button id="${btnId}" onclick="${fn}(${baseIdx}, ${qIdx}, '${btnId}')" style="display:inline-flex; align-items:center; gap:5px; background:${bg}; color:${col}; border:1px solid ${bd}; border-radius:6px; padding:4px 8px; font-size:0.75rem; font-weight:700; cursor:pointer; margin:2px 4px 2px 0;" title="${escapeHtml(q.quality || 'File')} (${sizeStr})">
+            <i class="fa-solid fa-cloud-arrow-down" style="font-size:0.7rem;"></i>
+            <span>${escapeHtml(q.quality || (o.predvd ? 'PreDVD' : 'HD'))}</span>
+            <span style="font-weight:normal; opacity:0.85;">(${sizeStr || 'N/A'})</span>
+            <span style="font-size:0.68rem; color:${col};">● ${q.seeders || 0}s</span>
+        </button>`;
+}
+
+function feedRowHTML(item, idx, predvd) {
+    const poster = item.poster || FALLBACK_POSTER;
+    const langs = (item.languages && item.languages.length) ? item.languages.join(', ') : (item.raw_text || '');
+    const buttons = (item._magnets || []).map((_, qIdx) => qualityButtonHTML(item, idx, qIdx, { predvd })).join('')
+        || '<span style="font-size:0.75rem; color:var(--text-sec);">No magnet links found</span>';
+    let statusBadge;
+    if (predvd) {
+        if (item.is_baseline) statusBadge = '<span class="badge" style="background:rgba(255,255,255,0.1); color:var(--text-sec);">Baseline (Ignored)</span>';
+        else if (item.leeched) statusBadge = '<span class="badge" style="background:#22c55e; color:white;">Leeched ✓</span>';
+        else if (item.queued) statusBadge = '<span class="badge" style="background:#eab308; color:black;">Queued</span>';
+        else statusBadge = '<span class="badge" style="background:#0ea5e9; color:white;">New - Eligible</span>';
+    } else {
+        statusBadge = item.in_library
+            ? '<span class="badge" style="background:#22c55e; color:white;"><i class="fa-solid fa-check"></i> In Stremio</span>'
+            : '<span class="badge" style="background:rgba(255,255,255,0.1); color:var(--text-sec);">Digital — manual</span>';
+    }
+    return `
+        <tr>
+            <td><img src="${poster}" loading="lazy" style="width:36px; height:52px; object-fit:cover; border-radius:4px; background:var(--bg);" onerror="this.src='${FALLBACK}'"></td>
+            <td><strong>${escapeHtml(item.title || 'Untitled')}</strong> <span style="font-size:0.8rem; color:var(--text-sec);">(${item.year || ''})</span></td>
+            <td><span style="font-size:0.8rem;">${escapeHtml(langs)}</span></td>
+            <td style="line-height:1.8;">${buttons}</td>
+            <td style="text-align:right;">${statusBadge}</td>
+        </tr>`;
+}
+
+function sentinelRow(id) {
+    return `<tr id="${id}" style="display:none;"><td colspan="5" style="text-align:center; padding:1rem; color:var(--text-sec);"><i class="fa-solid fa-spinner fa-spin"></i> Loading more…</td></tr>`;
+}
+
+async function loadFeedPage(kind, reset) {
+    const st = _feedState[kind];
+    if (st.loading) return;
+    const predvd = kind === 'predvd';
+    const tbodyId = predvd ? 'predvd-feed-tbody' : 'digital-feed-tbody';
+    const tbody = document.getElementById(tbodyId);
     if (!tbody) return;
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:1.5rem; color:var(--text-sec);"><i class="fa-solid fa-spinner fa-spin"></i> Loading digital releases…</td></tr>';
+    if (reset) {
+        st.page = 0; st.hasMore = true; st.items = [];
+        if (predvd) window.__predvdFeedItems = []; else window.__digitalFeedItems = [];
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:1.5rem; color:var(--text-sec);"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr>${sentinelRow(tbodyId + '-sentinel')}`;
+    }
+    if (!st.hasMore) return;
+    st.loading = true;
     try {
-        const res = await fetch('/api/admin/global/predvd/digital');
+        st.page += 1;
+        const url = `/api/admin/global/predvd/${predvd ? 'feed' : 'digital'}?page=${st.page}`;
+        const res = await fetch(url);
         const data = await res.json();
-        const items = data.items || [];
-        window.__digitalFeedItems = items;
-        if (!items.length) {
-            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:1.5rem; color:var(--text-sec);">No official digital releases found in the current feed.</td></tr>';
+        const items = (data.items || []).map(it => ({ ...it, _magnets: (it.qualities || []).filter(q => String(q.url || '').startsWith('magnet:')) }));
+        const startIdx = st.items.length;
+        st.items = st.items.concat(items);
+        st.hasMore = !!data.has_more;
+        if (predvd) window.__predvdFeedItems = st.items; else window.__digitalFeedItems = st.items;
+
+        if (reset && st.items.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:1.5rem; color:var(--text-sec);">${predvd ? 'No Tamil PreDVD releases currently in feed.' : 'No official digital releases found in the current feed.'}</td></tr>`;
             return;
         }
-        tbody.innerHTML = items.map((item, idx) => {
-            const poster = item.poster || 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=100';
-            const langs = (item.languages && item.languages.length) ? item.languages.join(', ') : (item.raw_text || '');
-            const qualitiesList = (item.qualities || []).filter(q => String(q.url || '').startsWith('magnet:'));
-            const qualityButtons = qualitiesList.map((q, qIdx) => {
-                const btnId = `btn-d-${idx}-${qIdx}`;
-                const sizeStr = q.size || '';
-                return `
-                    <button id="${btnId}" onclick="triggerDigitalQualityLeech(${idx}, ${qIdx}, '${btnId}')" style="display:inline-flex; align-items:center; gap:5px; background:rgba(34,197,94,0.10); color:#22c55e; border:1px solid rgba(34,197,94,0.35); border-radius:6px; padding:4px 8px; font-size:0.75rem; font-weight:700; cursor:pointer; margin:2px 4px 2px 0; transition:all 0.15s ease;" title="Click to leech this exact ${escapeHtml(q.quality || 'HD')} (${sizeStr}) file">
-                        <i class="fa-solid fa-cloud-arrow-down" style="font-size:0.7rem;"></i>
-                        <span>${escapeHtml(q.quality || 'HD')}</span>
-                        <span style="font-weight:normal; opacity:0.85;">(${sizeStr || 'N/A'})</span>
-                        <span style="font-size:0.68rem; color:#22c55e;">● ${q.seeders || 0}s</span>
-                    </button>`;
-            }).join('') || '<span style="font-size:0.75rem; color:var(--text-sec);">No magnet links found</span>';
-
-            let statusBadge;
-            if (item.in_library) {
-                statusBadge = '<span class="badge" style="background:#22c55e; color:white;"><i class="fa-solid fa-check"></i> In Stremio</span>';
-            } else {
-                statusBadge = '<span class="badge" style="background:rgba(255,255,255,0.1); color:var(--text-sec);">Digital — manual</span>';
-            }
-
-            return `
-                <tr>
-                    <td><img src="${poster}" style="width:36px; height:52px; object-fit:cover; border-radius:4px; background:var(--bg);" onerror="this.src='https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=100'"></td>
-                    <td><strong>${escapeHtml(item.title || 'Untitled')}</strong> <span style="font-size:0.8rem; color:var(--text-sec);">(${item.year || ''})</span></td>
-                    <td><span style="font-size:0.8rem;">${escapeHtml(langs)}</span></td>
-                    <td style="line-height:1.8;">${qualityButtons}</td>
-                    <td style="text-align:right;">${statusBadge}</td>
-                </tr>`;
-        }).join('');
+        // Remove skeleton/sentinel, append new rows + fresh sentinel.
+        if (reset) tbody.innerHTML = '';
+        const html = items.map((it, i) => feedRowHTML(it, startIdx + i, predvd)).join('') + (st.hasMore ? sentinelRow(tbodyId + '-sentinel') : '');
+        tbody.insertAdjacentHTML('beforeend', html);
+        attachFeedObserver(kind);
     } catch (e) {
-        console.error('loadDigital error:', e);
-        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:1.5rem; color:#f43f5e;">Failed to load digital feed: ${escapeHtml(e.message)}</td></tr>`;
+        console.error('loadFeedPage', kind, e);
+        if (reset) tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:1.5rem; color:#f43f5e;">Failed to load feed: ${escapeHtml(e.message)}</td></tr>`;
+    } finally {
+        st.loading = false;
     }
 }
+
+const _feedObservers = {};
+function attachFeedObserver(kind) {
+    const predvd = kind === 'predvd';
+    const tbodyId = predvd ? 'predvd-feed-tbody' : 'digital-feed-tbody';
+    const sentinel = document.getElementById(tbodyId + '-sentinel');
+    if (!sentinel) return;
+    if (_feedObservers[kind]) _feedObservers[kind].disconnect();
+    const io = new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting) loadFeedPage(kind, false);
+    }, { rootMargin: '200px' });
+    io.observe(sentinel);
+    _feedObservers[kind] = io;
+}
+
+function loadDigital() { return loadFeedPage('digital', true); }
+function loadPreDVDFeed() { return loadFeedPage('predvd', true); }
 
 async function triggerDigitalQualityLeech(itemIdx, qIdx, btnId) {
     const item = window.__digitalFeedItems?.[itemIdx];
     if (!item) { showNotification('Movie data not found', 'error'); return; }
-    const qualitiesList = (item.qualities || []).filter(q => String(q.url || '').startsWith('magnet:'));
+    const qualitiesList = item._magnets || (item.qualities || []).filter(q => String(q.url || '').startsWith('magnet:'));
     const q = qualitiesList[qIdx];
     if (!q || !q.url) { showNotification('Invalid magnet link for selected quality', 'error'); return; }
 
