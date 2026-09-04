@@ -18,6 +18,7 @@ from .logger import LOGGER
 from .metadata import format_tmdb_image, tmdb_details, tmdb_search, year_number
 from .parser import (
     clean_filename,
+    clean_movie_title,
     determine_catalog,
     episode_bounds,
     extract_fallback_title_and_year,
@@ -399,12 +400,21 @@ async def _process_message(chat_id: int, message) -> str | None:
         except Exception:
             parsed = {}
 
-        title = parsed.get("title")
+        raw_ptn_title = parsed.get("title")
         year = parsed.get("year")
 
-        # If PTN failed or parsed a generic language/edition keyword (e.g. DC, Tamil, Director's Cut)
+        # PTN keeps source-site tokens (www, 1TamilMV, TamilBlasters…) and the
+        # uploader/ripper handle (meme, ing, Pizza…) in the title. Strip them so
+        # TMDb search sees only the real movie name.
+        title = clean_movie_title(raw_ptn_title) if raw_ptn_title else ""
+
+        # If PTN failed, produced only a generic keyword (Tamil, Director's Cut),
+        # a bare 4-digit year, or nothing left after cleaning — use the fallback
+        # parser on the raw filename.
         generic_words = {"tamil", "telugu", "hindi", "malayalam", "kannada", "english", "multi", "director's cut", "directors cut", "extended", "remastered", "unrated"}
-        if not title or str(title).strip().lower() in generic_words or len(str(title).strip()) < 2:
+        t_check = str(title).strip().lower()
+        if (not title or t_check in generic_words or len(t_check) < 2
+                or re.fullmatch(r"(19|20)\d{2}", t_check)):
             fb_title, fb_year = extract_fallback_title_and_year(filename)
             if fb_title:
                 title = fb_title

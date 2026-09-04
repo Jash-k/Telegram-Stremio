@@ -104,7 +104,11 @@
                 Official digital prints in the feed — <strong>manual leech only</strong>. When one lands in your dump channel, the global indexer automatically removes the older PreDVD.
             </p>
         </div>
-        <button onclick="loadDigital()" class="btn btn-primary" style="background:#16a34a; border-color:#15803d; padding:0.4rem 0.8rem; font-size:0.85rem;"><i class="fa-solid fa-rotate"></i> Refresh</button>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <label style="font-size:0.8rem; color:var(--text-sec); white-space:nowrap;"><i class="fa-solid fa-paper-plane"></i> Leech to:</label>
+            <select id="digital-target-select" class="s-input leech-target-select" style="padding:0.4rem 0.6rem; font-size:0.85rem; min-width:200px;" onchange="syncTargetSelect(this)"></select>
+            <button onclick="loadDigital()" class="btn btn-primary" style="background:#16a34a; border-color:#15803d; padding:0.4rem 0.8rem; font-size:0.85rem;"><i class="fa-solid fa-rotate"></i> Refresh</button>
+        </div>
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
         <table class="table" style="width:100%; border-collapse:collapse; font-size:0.85rem;">
@@ -136,7 +140,9 @@
                 Auto-sends the leech command for new Tamil PreDVDs (waits/queues while the global indexer is busy). The global indexer then removes each PreDVD automatically when the official digital print arrives — see <strong>Digital Releases</strong>.
             </p>
         </div>
-        <div style="display:flex; gap:8px;">
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <label style="font-size:0.8rem; color:var(--text-sec); white-space:nowrap;" title="Target for MANUAL quality clicks below. Auto-leech always uses the primary group in settings."><i class="fa-solid fa-paper-plane"></i> Manual leech to:</label>
+            <select id="predvd-target-select" class="s-input leech-target-select" style="padding:0.4rem 0.6rem; font-size:0.85rem; min-width:200px;" onchange="syncTargetSelect(this)"></select>
             <button onclick="syncPreDVDFeed()" class="btn btn-primary" style="background:#f43f5e; border-color:#e11d48; padding:0.4rem 0.8rem; font-size:0.85rem;"><i class="fa-solid fa-rotate"></i> Check Feed Now</button>
             <button onclick="resetBaseline()" class="btn btn-ghost" style="padding:0.4rem 0.8rem; font-size:0.85rem;" title="Mark current feed as baseline snapshot so pre-existing movies are ignored"><i class="fa-solid fa-camera"></i> Reset Baseline</button>
         </div>
@@ -181,6 +187,14 @@
             <div>
                 <label style="display:block; font-size:0.8rem; color:var(--text-sec); margin-bottom:4px;">Leech Command Prefix</label>
                 <input type="text" id="predvd-set-cmd-prefix" placeholder="/qbleech@bot" class="input" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:0.85rem;" required>
+            </div>
+            <div style="grid-column: 1 / -1; border:1px dashed var(--border); border-radius:8px; padding:12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
+                    <label style="font-size:0.85rem; font-weight:600;"><i class="fa-solid fa-layer-group" style="color:#0ea5e9;"></i> Additional Leech Groups (manual leech picker)</label>
+                    <button type="button" class="btn btn-ghost" style="padding:0.3rem 0.7rem; font-size:0.78rem;" onclick="addLeechGroupRow()"><i class="fa-solid fa-plus"></i> Add group</button>
+                </div>
+                <p style="font-size:0.72rem; color:var(--text-sec); margin:0 0 8px;">The group above is always the <strong>primary / auto-leech</strong> target. Any groups added here appear in the “Leech to” dropdown for <strong>manual</strong> leeching only — auto PreDVD leeching ignores them. Your userbot must be a member of each group.</p>
+                <div id="leech-groups-wrap" style="display:flex; flex-direction:column; gap:8px;"></div>
             </div>
             <div>
                 <label style="display:block; font-size:0.8rem; color:var(--text-sec); margin-bottom:4px;">Min File Size Limit (MB)</label>
@@ -1775,6 +1789,81 @@ function showNotification(msg, type = 'info') {
 
 let cachedPreDVDSettings = null;
 window.__predvdFeedItems = [];
+let leechGroups = [];                 // extra manual groups in the settings editor
+let leechTargets = [];                // [{label,group_id,command_prefix,auto}] for the picker
+
+// ---- Manual leech-group target dropdown (shared by Digital + PreDVD tabs) ----
+async function loadLeechTargets() {
+    try {
+        const res = await fetch('/api/admin/global/predvd/leech-targets');
+        const data = await res.json();
+        leechTargets = data.targets || [];
+    } catch (e) { leechTargets = []; }
+    document.querySelectorAll('.leech-target-select').forEach(sel => {
+        const prev = sel.value;
+        sel.innerHTML = leechTargets.map(t =>
+            `<option value="${escapeHtml(t.group_id)}" data-prefix="${escapeHtml(t.command_prefix)}">${escapeHtml(t.label)} — ${escapeHtml(t.group_id)}</option>`
+        ).join('') || '<option value="">No group configured</option>';
+        if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+    });
+}
+
+// Keep the two tab dropdowns in sync when one changes.
+function syncTargetSelect(src) {
+    document.querySelectorAll('.leech-target-select').forEach(sel => { if (sel !== src) sel.value = src.value; });
+}
+
+// Resolve the currently selected manual leech target (falls back to primary).
+function selectedLeechTarget() {
+    const sel = document.querySelector('.leech-target-select');
+    const gid = sel ? sel.value : '';
+    const t = leechTargets.find(x => x.group_id === gid);
+    return {
+        group_id: t ? t.group_id : (cachedPreDVDSettings?.group_id || ''),
+        command_prefix: t ? t.command_prefix : (cachedPreDVDSettings?.command_prefix || '/qbleech'),
+    };
+}
+
+// ---- Extra manual leech groups editor (inside PreDVD settings) ----
+function renderLeechGroupRows() {
+    const wrap = document.getElementById('leech-groups-wrap');
+    if (!wrap) return;
+    if (!leechGroups.length) {
+        wrap.innerHTML = '<div style="font-size:0.78rem; color:var(--text-sec);">No extra groups yet — click “Add group”.</div>';
+        return;
+    }
+    const inp = 'background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px 8px; color:var(--text); font-size:0.82rem;';
+    wrap.innerHTML = leechGroups.map((g, i) => `
+        <div style="display:grid; grid-template-columns: 130px 1fr 150px auto auto; gap:8px; align-items:center;">
+            <input data-lg="label" data-i="${i}" type="text" placeholder="Label (e.g. Group 2)" value="${escapeHtml(g.label || '')}" style="${inp}">
+            <input data-lg="group_id" data-i="${i}" type="text" placeholder="Group ID (-100… or @group)" value="${escapeHtml(g.group_id || '')}" style="${inp}">
+            <input data-lg="command_prefix" data-i="${i}" type="text" placeholder="/leech" value="${escapeHtml(g.command_prefix || '')}" style="${inp}">
+            <label style="font-size:0.75rem; color:var(--text-sec); display:flex; align-items:center; gap:5px; white-space:nowrap;">
+                <input type="checkbox" data-lg="enabled" data-i="${i}" ${g.enabled !== false ? 'checked' : ''}> enabled
+            </label>
+            <button type="button" class="btn btn-danger" style="padding:0.3rem 0.6rem; font-size:0.75rem;" onclick="removeLeechGroupRow(${i})"><i class="fa-solid fa-trash"></i></button>
+        </div>`).join('');
+    wrap.querySelectorAll('input').forEach(el => el.addEventListener('input', syncLeechGroupInputs));
+}
+
+function syncLeechGroupInputs() {
+    document.querySelectorAll('#leech-groups-wrap input[data-lg]').forEach(el => {
+        const i = parseInt(el.getAttribute('data-i'), 10);
+        const k = el.getAttribute('data-lg');
+        if (!leechGroups[i]) return;
+        leechGroups[i][k] = (el.type === 'checkbox') ? el.checked : el.value;
+    });
+}
+
+function addLeechGroupRow() {
+    leechGroups.push({ label: '', group_id: '', command_prefix: '', enabled: true });
+    renderLeechGroupRows();
+}
+
+function removeLeechGroupRow(i) {
+    leechGroups.splice(i, 1);
+    renderLeechGroupRows();
+}
 
 async function loadPreDVD() {
     try {
@@ -1793,6 +1882,11 @@ async function loadPreDVD() {
         document.getElementById('predvd-set-min-size').value = s.min_size_mb !== undefined ? s.min_size_mb : 800;
         document.getElementById('predvd-set-max-files').value = s.max_files_per_movie !== undefined ? s.max_files_per_movie : 1;
         document.getElementById('predvd-set-enabled').checked = s.enabled !== false;
+
+        // Extra manual leech groups + refresh the target dropdowns.
+        leechGroups = Array.isArray(s.manual_groups) ? JSON.parse(JSON.stringify(s.manual_groups)) : [];
+        renderLeechGroupRows();
+        loadLeechTargets();
 
         document.getElementById('predvd-stat-status').innerText = s.enabled ? 'Enabled' : 'Disabled';
         document.getElementById('predvd-stat-status').style.color = s.enabled ? '#22c55e' : '#ef4444';
@@ -1851,6 +1945,7 @@ async function savePreDVDSettings(e) {
         min_size_mb: parseInt(document.getElementById('predvd-set-min-size').value, 10),
         max_files_per_movie: parseInt(document.getElementById('predvd-set-max-files').value, 10),
         enabled: document.getElementById('predvd-set-enabled').checked,
+        manual_groups: leechGroups,
     };
 
     try {
@@ -1923,10 +2018,12 @@ async function triggerDirectQualityLeech(itemIdx, qIdx, btnId) {
 
     const title = item.title || 'Untitled';
     const qualityLabel = `${q.quality || 'PreDVD'} (${q.size || 'Size N/A'})`;
-    const targetGroup = document.getElementById('predvd-set-group-id')?.value || cachedPreDVDSettings?.group_id || '';
-    const cmdPrefix = document.getElementById('predvd-set-cmd-prefix')?.value || cachedPreDVDSettings?.command_prefix || '';
+    const tgt = selectedLeechTarget();
+    const targetGroup = tgt.group_id;
+    const cmdPrefix = tgt.command_prefix;
 
-    if (!confirm(`Send leech command to group ${targetGroup}?\n\n🎬 ${title}\n⚡ Quality: ${qualityLabel}\n👥 Seeds: ${q.seeders || 0}\n\nCommand:\n${cmdPrefix} <magnet>`)) {
+    if (!targetGroup) { showNotification('No leech group configured. Set one in PreDVD settings.', 'error'); return; }
+    if (!confirm(`Send leech command to group ${targetGroup}?\n\n🎬 ${title}\n⚡ Quality: ${qualityLabel}\n\nCommand:\n${cmdPrefix} <magnet>`)) {
         return;
     }
 
@@ -1947,7 +2044,9 @@ async function triggerDirectQualityLeech(itemIdx, qIdx, btnId) {
             body: JSON.stringify({
                 title: title,
                 magnet_url: q.url,
-                quality: qualityLabel
+                quality: qualityLabel,
+                group_id: targetGroup,
+                command_prefix: cmdPrefix
             })
         });
         const data = await res.json();
@@ -2003,7 +2102,6 @@ function qualityButtonHTML(item, baseIdx, qIdx, opts) {
             <i class="fa-solid fa-cloud-arrow-down" style="font-size:0.7rem;"></i>
             <span>${escapeHtml(q.quality || (o.predvd ? 'PreDVD' : 'HD'))}</span>
             <span style="font-weight:normal; opacity:0.85;">(${sizeStr || 'N/A'})</span>
-            <span style="font-size:0.68rem; color:${col};">● ${q.seeders || 0}s</span>
         </button>`;
 }
 
@@ -2105,9 +2203,12 @@ async function triggerDigitalQualityLeech(itemIdx, qIdx, btnId) {
 
     const title = item.title || 'Untitled';
     const qualityLabel = `${q.quality || 'HD'} (${q.size || 'Size N/A'})`;
-    const targetGroup = cachedPreDVDSettings?.group_id || document.getElementById('predvd-set-group-id')?.value || '';
+    const tgt = selectedLeechTarget();
+    const targetGroup = tgt.group_id;
+    const cmdPrefix = tgt.command_prefix;
 
-    if (!confirm(`Send leech command to group ${targetGroup}?\n\n🎬 ${title}\n⚡ Quality: ${qualityLabel}\n👥 Seeds: ${q.seeders || 0}`)) {
+    if (!targetGroup) { showNotification('No leech group configured. Set one in PreDVD settings.', 'error'); return; }
+    if (!confirm(`Send leech command to group ${targetGroup}?\n\n🎬 ${title}\n⚡ Quality: ${qualityLabel}\n\nCommand:\n${cmdPrefix} <magnet>`)) {
         return;
     }
 
@@ -2120,7 +2221,7 @@ async function triggerDigitalQualityLeech(itemIdx, qIdx, btnId) {
         const res = await fetch('/api/admin/global/predvd/manual-leech', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title, magnet_url: q.url, quality: qualityLabel })
+            body: JSON.stringify({ title, magnet_url: q.url, quality: qualityLabel, group_id: targetGroup, command_prefix: cmdPrefix })
         });
         const data = await res.json();
         if (res.ok && data.ok) {
@@ -2163,6 +2264,7 @@ document.addEventListener("DOMContentLoaded", () => {
     checkTasks();
     pollStreamActivity();
     setInterval(pollStreamActivity, 5000);   // cheap endpoint — live Mbps
+    loadLeechTargets();                      // populate leech-group dropdowns
 });
 </script>
 {% endif %}

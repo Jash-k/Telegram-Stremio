@@ -902,6 +902,13 @@ async def update_predvd_settings(request: Request):
     return {"ok": True, "settings": saved}
 
 
+@router.get("/predvd/leech-targets", dependencies=[Depends(require_auth)])
+async def get_leech_targets():
+    """Destinations for the manual-leech group picker (primary auto group first)."""
+    from app import predvd_automator
+    return {"ok": True, "targets": await predvd_automator.get_leech_targets()}
+
+
 async def _fetch_feed_cached(settings_feed_url) -> list:
     """Cache the external movies.json fetch for ~2 min (instant tab re-opens)."""
     import time as _t
@@ -1037,13 +1044,26 @@ async def trigger_manual_leech(request: Request):
     magnet_url = (body.get("magnet_url") or "").strip()
     title = (body.get("title") or "Manual Leech").strip()
     quality = (body.get("quality") or "PreDVD").strip()
+    target_group = (body.get("group_id") or "").strip()       # optional manual pick
+    target_prefix = (body.get("command_prefix") or "").strip()
 
     if not magnet_url.startswith("magnet:"):
         raise HTTPException(status_code=400, detail="Invalid magnet URL (must start with magnet:)")
 
+    # If a specific target was chosen, validate it against the configured groups.
+    if target_group:
+        targets = await predvd_automator.get_leech_targets()
+        match = next((t for t in targets if str(t.get("group_id")) == target_group), None)
+        if not match:
+            raise HTTPException(status_code=400, detail="Selected leech group is not configured/enabled.")
+        target_prefix = match.get("command_prefix") or target_prefix
+
     # Goes through the indexer-priority gate: sends now when the indexer is
     # idle, otherwise persists to a restart-safe queue and sends afterwards.
-    res = await predvd_automator.request_leech(magnet_url, title, quality, key=None)
+    res = await predvd_automator.request_leech(
+        magnet_url, title, quality, key=None,
+        group_id=target_group or None, command_prefix=target_prefix or None,
+    )
     if not res.get("ok"):
         raise HTTPException(status_code=400, detail=res.get("error", "Failed to send leech command"))
 
@@ -1052,6 +1072,7 @@ async def trigger_manual_leech(request: Request):
         "title": title,
         "quality": quality,
         "magnet_url": magnet_url,
+        "target_group": target_group or "",
         "timestamp": time.time(),
         "info": res.get("message", ""),
     })

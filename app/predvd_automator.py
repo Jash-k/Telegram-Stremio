@@ -62,7 +62,42 @@ def get_default_settings() -> Dict[str, Any]:
         "max_files_per_movie": getattr(config, "PREDVD_MAX_FILES_PER_MOVIE", 1),
         "preferred_quality": "720p AVC",
         "poll_interval_minutes": getattr(config, "PREDVD_POLL_INTERVAL_MINUTES", 15),
+        # Extra leech targets for MANUAL leeching only (the Digital tab & the
+        # manual PreDVD buttons). The primary group_id/command_prefix above is
+        # always the AUTO-leech target and stays first in this list. Each entry:
+        # {"label": str, "group_id": str, "command_prefix": str, "enabled": bool}
+        "manual_groups": [],
     }
+
+
+async def get_leech_targets() -> List[Dict[str, Any]]:
+    """All leech destinations for the manual-leech group picker.
+
+    Index 0 is always the primary (auto-leech) group. Extra MANUAL-only groups
+    come from settings["manual_groups"]. Disabled extra groups are omitted.
+    """
+    settings = await get_settings()
+    targets: List[Dict[str, Any]] = [{
+        "label": "Primary (auto-leech)",
+        "group_id": settings.get("group_id") or "",
+        "command_prefix": settings.get("command_prefix") or "/qbleech",
+        "auto": True,
+        "enabled": True,
+    }]
+    for i, g in enumerate(settings.get("manual_groups") or []):
+        gid = str(g.get("group_id") or "").strip()
+        if not gid:
+            continue
+        if g.get("enabled", True) is False:
+            continue
+        targets.append({
+            "label": str(g.get("label") or f"Group {i + 1}").strip() or f"Group {i + 1}",
+            "group_id": gid,
+            "command_prefix": str(g.get("command_prefix") or settings.get("command_prefix") or "/qbleech").strip(),
+            "auto": False,
+            "enabled": True,
+        })
+    return targets
 
 
 # ---------------------------------------------------------------------------
@@ -134,11 +169,32 @@ async def get_settings() -> Dict[str, Any]:
 
 async def save_settings(new_cfg: Dict[str, Any]) -> Dict[str, Any]:
     defaults = get_default_settings()
+    # Normalize extra manual leech groups first (list, not a scalar).
+    if "manual_groups" in new_cfg:
+        groups = []
+        seen = set()
+        for g in new_cfg.get("manual_groups") or []:
+            if not isinstance(g, dict):
+                continue
+            gid = str(g.get("group_id") or "").strip()
+            pfx = str(g.get("command_prefix") or "").strip()
+            if not gid or gid in seen:
+                continue
+            seen.add(gid)
+            groups.append({
+                "label": str(g.get("label") or "").strip()[:60],
+                "group_id": gid,
+                "command_prefix": pfx or "/qbleech",
+                "enabled": bool(g.get("enabled", True)),
+            })
+        new_cfg = {**new_cfg, "manual_groups": groups}
     cleaned = {}
     for k in defaults:
         if k in new_cfg:
             if k == "enabled":
                 cleaned[k] = bool(new_cfg[k])
+            elif k == "manual_groups":
+                cleaned[k] = new_cfg[k]
             elif k in ("min_size_mb", "max_files_per_movie", "poll_interval_minutes"):
                 cleaned[k] = int(new_cfg[k])
             else:
@@ -403,11 +459,15 @@ async def drain_queued_leeches() -> int:
     return sent
 
 
-async def request_leech(magnet_url: str, title: str, quality: str, key=None) -> Dict[str, Any]:
+async def request_leech(magnet_url: str, title: str, quality: str, key=None,
+                        group_id: Optional[str] = None, command_prefix: Optional[str] = None) -> Dict[str, Any]:
     """Gate-aware leech used by BOTH the automator and manual panel leeches.
 
     * Indexer busy  -> persist to queue, return queued=True.
     * Indexer idle  -> send now.
+
+    Manual leeches may override `group_id`/`command_prefix` to target one of the
+    extra leech groups; the automator leaves both None and uses the primary.
     """
     magnet_url = (magnet_url or "").strip()
     title = (title or "Manual Leech").strip()
@@ -416,8 +476,14 @@ async def request_leech(magnet_url: str, title: str, quality: str, key=None) -> 
         return {"ok": False, "queued": False, "error": "Invalid magnet URL (must start with magnet:)"}
 
     settings = await get_settings()
-    group_id = settings.get("group_id") or getattr(config, "PREDVD_GROUP_ID", "")
-    command_prefix = settings.get("command_prefix") or getattr(config, "PREDVD_COMMAND_PREFIX", "/qbleech")
+    group_id = (group_id or "").strip()
+    command_prefix = (command_prefix or "").strip()
+    if group_id:
+        # Manual target chosen — make sure its command prefix is valid.
+        command_prefix = command_prefix or settings.get("command_prefix") or "/qbleech"
+    else:
+        group_id = settings.get("group_id") or getattr(config, "PREDVD_GROUP_ID", "")
+        command_prefix = settings.get("command_prefix") or getattr(config, "PREDVD_COMMAND_PREFIX", "/qbleech")
     if not group_id:
         return {"ok": False, "queued": False, "error": "Leech group not configured (set PREDVD_GROUP_ID)."}
 

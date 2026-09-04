@@ -206,27 +206,147 @@ def determine_catalog(details: dict, media_type: str, filename: str) -> str:
 
 _GENERIC_TITLES = {"tamil", "telugu", "hindi", "malayalam", "kannada", "english", "multi", "director's cut", "directors cut", "extended", "remastered", "unrated"}
 
+# Source-site tokens that appear inside release filenames and are never part of
+# the real title. Matched case-insensitively as whole tokens.
+_SITE_NAME_TOKENS = {
+    "1tamilmv", "tamilmv", "tamilblasters", "tamilrockers", "tamilraja",
+    "tamilarasan", "tamilyogi", "isaimini", "moviesda", "madrasrockers",
+    "jiorockers", "1tamilrockers", "tamilgun", "torrent", "www",
+}
+
+# Tokens that mark the START of the "technical" tail (everything from the first
+# such token onward is not part of the title).
+_TAIL_TECH_RE = re.compile(
+    r"^(?:\d{3,4}p|\d{1,2}k|uhd|web[-\s]?dl|webdl|web[-\s]?rip|webrip|hdrip|hd[-\s]?rip|"
+    r"bluray|blu[-\s]?ray|brrip|bdrip|dvdrip|dvd[-\s]?rip|predvd|pre[-\s]?dvd|camrip|"
+    r"hdcam|hdtc|hd[-\s]?tc|hdts|hd[-\s]?ts|hdtv|hevc|x264|x265|h\.?264|h\.?265|avc|aac|"
+    r"ac3|dts|eac3|ddp?|dd|esub|esubs|subs|proper|repack|hdr|"
+    r"tam(?:il)?|tel(?:ugu)?|hin(?:di)?|mal(?:ayalam)?|kan(?:nada)?|eng(?:lish)?|multi|"
+    r"season|episode|s\d{1,2}e\d{1,3})$",
+    re.IGNORECASE,
+)
+
+_SE_RE = re.compile(r"^s\d{1,3}(?:e\d{1,3})?$", re.IGNORECASE)
+
+
+def _normalize_separators(text: str) -> str:
+    """Turn dots/underscores/hyphens used as separators into spaces."""
+    text = re.sub(r"[._]+", " ", str(text or ""))
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" .-_()[]{}")
+
+
+def _looks_like_title_word(tok: str) -> bool:
+    """A token that is clearly part of the movie title (not an uploader tag).
+
+    Capitalized words (The Odyssey, Toxic, Spider) or longer lowercase words
+    count; short all-lowercase tags (meme, ing) and lone initials do not.
+    """
+    if not tok or _SE_RE.match(tok):
+        return False
+    if tok[0].isupper():
+        return True
+    if len(tok) >= 4 and tok.isalpha():
+        return True
+    return False
+
+
+def strip_site_and_uploader(title: str) -> str:
+    """Remove source-site prefix and the ripper/uploader handle after it.
+
+    Handles both dot- and underscore-separated forms, e.g.:
+      'www 1TamilMV meme Arulvaan'        -> 'Arulvaan'
+      'www 1TamilMV Pizza Photographer'   -> 'Photographer'
+      'www 1TamilMV reisen The Odyssey'   -> 'The Odyssey'
+      'www 1TamilMV Leo'                  -> 'Leo'  (no ripper handle; kept)
+    """
+    norm = _normalize_separators(title)
+    if not norm:
+        return ""
+    toks = norm.split()
+
+    while toks and toks[0].lower() in ("www", "http", "https"):
+        toks.pop(0)
+
+    site_idx = -1
+    for i, t in enumerate(toks):
+        if t.lower() in _SITE_NAME_TOKENS:
+            site_idx = i
+            break
+
+    if site_idx >= 0:
+        after = toks[site_idx + 1:]
+        ripper = after[0] if after else ""
+        rest = after[1:] if after else []
+        if ripper and not _SE_RE.match(ripper):
+            has_title_after = any(_looks_like_title_word(t) for t in rest)
+            if has_title_after:
+                toks = rest          # drop site + ripper handle
+            else:
+                toks = after         # only one token after site; keep it (title)
+        else:
+            toks = after
+    else:
+        toks = [t for t in toks if t.lower() not in _SITE_NAME_TOKENS]
+
+    result = " ".join(toks).strip()
+    # Unwrap a TLD/handle glued to the title with a hyphen: "lol-Vikram" -> "Vikram".
+    result = re.sub(
+        r"^(?:www[.\s-]*)?(?:com|net|org|lol|xyz|vip|cc|me|io|to|in|co|link|click)\s*-\s*",
+        "",
+        result,
+        flags=re.I,
+    )
+    return result.strip()
+
+
+def _cut_technical_tail(title: str) -> str:
+    """Cut the title at the first technical tag (resolution/codec/language/etc)."""
+    kept = []
+    for t in title.split():
+        bare = t.strip("()-[]{},+")
+        if _TAIL_TECH_RE.match(bare):
+            break
+        kept.append(t)
+    return " ".join(kept).strip(" .-_()[]{}")
+
+
+def clean_movie_title(raw: str) -> str:
+    """Best-effort clean movie title from a raw filename or a PTN 'title'.
+
+    Idempotent and safe on PTN's already-parsed title: normalizes separators,
+    strips source-site + uploader prefix, and drops the technical tail.
+    """
+    norm = _normalize_separators(raw)
+    norm = strip_site_and_uploader(norm)
+    ym = re.search(r"\b(19\d{2}|20\d{2})\b", norm)
+    if ym:
+        norm = norm[:ym.start()].strip(" .-_()[]{}")
+    norm = _cut_technical_tail(norm)
+    return norm.strip()
+
+
 def extract_fallback_title_and_year(filename: str) -> tuple[Optional[str], Optional[int]]:
     clean = clean_filename(filename)
     clean = re.sub(r"\.(?:mkv|mp4|avi|mov|ts|m4v|flv|webm)$", "", clean, flags=re.I)
-    clean = re.sub(r"^(?:www\.)?[a-zA-Z0-9_\-\.]+\.(?:meme|pm|cz|wf|vip|yt|to|org|com|net|in|is|info|pizza|report)[\s._\-]*", "", clean, flags=re.I)
-    clean = re.sub(r"^[\[\(\{][^\]\)\}]+[\]\)\}][\s._\-]*", "", clean)
-    
-    # Check for "Title (YYYY)" or "Title.YYYY" or "Title - YYYY" pattern
+    clean = re.sub(r"^[\[\(\{][^\]\)\}]+[\]\)\}][\s._\-]*", " ", clean)
+    # Normalize separators FIRST so site tokens (dot or underscore separated) are
+    # matched; strip_site_and_uploader() removes "www <site> <ripper>" as tokens.
+    clean = _normalize_separators(clean)
+
+    year = None
+    title_part = clean
     year_match = re.search(r"[\s._\-\(\[]+(19\d\d|20\d\d)[\s._\-\)\]]*", clean)
     if year_match:
         year = int(year_match.group(1))
-        title_part = clean[:year_match.start()].strip(" ._-()[]{}")
-        if title_part:
-            return title_part, year
-            
-    # Pattern 2: Title before quality/codec tags (1080p, 720p, WEBRip, HDRip, etc.)
-    split_match = re.search(r"[\s._\-\(\[]+(?:1080p|720p|2160p|4k|web-?rip|web-?dl|hdrip|bluray|dvd|x264|x265|hevc|h264|tamil|telugu|hindi|malayalam|kannada)[\s._\-\)\]]*", clean, re.I)
-    if split_match:
-        title_part = clean[:split_match.start()].strip(" ._-()[]{}")
-        if title_part:
-            return title_part, None
-            
+        title_part = clean[:year_match.start()]
+
+    title_part = strip_site_and_uploader(title_part)
+    title_part = _cut_technical_tail(title_part)
+    title_part = title_part.strip(" ._-()[]{}")
+    if title_part:
+        return title_part, year
+
     return None, None
 
 # ---------------------------------------------------------------------------
