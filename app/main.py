@@ -125,6 +125,41 @@ async def lifespan(app: FastAPI):
     await db.disconnect()
 
 
+# ---------------------------------------------------------------------------
+# Quiet the access log: the admin panel polls a few lightweight endpoints every
+# few seconds, which otherwise floods the Koyeb logs with one line per poll.
+# We suppress only SUCCESSFUL (2xx/304) hits to those high-frequency poll
+# endpoints — real page loads, all POST actions, and any error (>=400) are kept.
+# ---------------------------------------------------------------------------
+import logging as _logging
+
+class _PollingLogFilter(_logging.Filter):
+    _NOISY_GETS = (
+        "/stream-activity", "/index/status", "/tasks/status",
+        "/predvd/leech-targets", "/health",
+    )
+
+    def filter(self, record: _logging.LogRecord) -> bool:
+        try:
+            args = record.args or ()
+            request_line = str(args[1]) if len(args) > 1 else ""
+            code = str(args[2]) if len(args) > 2 else ""
+            parts = request_line.split()
+            method = parts[0] if parts else ""
+            path = parts[1] if len(parts) > 1 else ""
+        except Exception:
+            return True
+        if code.startswith(("2", "304")) and method.upper() == "GET":
+            if any(p in path for p in self._NOISY_GETS):
+                return False
+        return True
+
+
+for _name in ("uvicorn.access",):
+    _lg = _logging.getLogger(_name)
+    _lg.addFilter(_PollingLogFilter())
+
+
 app = FastAPI(title="Global Stremio", version=__version__, lifespan=lifespan)
 
 # CORS is REQUIRED for Stremio web installs: web.stremio.com fetches the

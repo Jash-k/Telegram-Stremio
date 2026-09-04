@@ -691,10 +691,14 @@ async def channel_remove(payload: dict, _: bool = Depends(require_auth)):
     purge = bool(payload.get("purge", False))
     if purge:
         # Also delete this channel's indexed files + orphaned meta.
-        file_keys = [f["_id"] async for f in db.col("files").find({"chat_id": {"$in": [chat_id, str(chat_id)]}}, {"_id": 1, "meta_id": 1})]
-        meta_ids = {f["meta_id"] for f in file_keys if f.get("meta_id")}
-        await db.col("files").delete_many({"chat_id": {"$in": [chat_id, str(chat_id)]}})
-        await db.col("unindexed").delete_many({"chat_id": {"$in": [chat_id, str(chat_id)]}})
+        chat_query = {"chat_id": {"$in": [chat_id, str(chat_id)]}}
+        meta_ids = set()
+        async for f in db.col("files").find(chat_query, {"_id": 0, "meta_id": 1}):
+            mid = f.get("meta_id")
+            if mid:
+                meta_ids.add(mid)
+        await db.col("files").delete_many(chat_query)
+        await db.col("unindexed").delete_many(chat_query)
         for mid in meta_ids:
             if not await db.col("files").find_one({"meta_id": mid}, {"_id": 1}):
                 await db.col("meta").delete_one({"_id": mid})

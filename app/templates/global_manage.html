@@ -2263,7 +2263,7 @@ document.addEventListener("DOMContentLoaded", () => {
     checkIndexer();
     checkTasks();
     pollStreamActivity();
-    setInterval(pollStreamActivity, 5000);   // cheap endpoint — live Mbps
+    setInterval(pollStreamActivity, 10000);  // cheap endpoint — live Mbps (10s)
     loadLeechTargets();                      // populate leech-group dropdowns
 });
 </script>
