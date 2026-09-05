@@ -1067,6 +1067,7 @@ async def trigger_manual_leech(request: Request):
     res = await predvd_automator.request_leech(
         magnet_url, title, quality, key=None,
         group_id=target_group or None, command_prefix=target_prefix or None,
+        year=body.get("year"), auto=False,
     )
     if not res.get("ok"):
         raise HTTPException(status_code=400, detail=res.get("error", "Failed to send leech command"))
@@ -1081,5 +1082,7 @@ async def trigger_manual_leech(request: Request):
         "info": res.get("message", ""),
     })
 
-    return {"ok": True, "queued": res.get("queued", False), "message": res.get("message", "Leech request accepted.")}
+    return {"ok": True, "queued": res.get("queued", False),
+            "duplicate": res.get("duplicate", False),
+            "message": res.get("message", "Leech request accepted.")}
 

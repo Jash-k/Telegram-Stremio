@@ -43,7 +43,22 @@ async def connect() -> None:
         connectTimeoutMS=15000,
         maxPoolSize=50,
     )
-    await _client.admin.command("ping")
+    # A fresh/cold instance can take a few tries to reach Atlas. Retry the
+    # initial ping with backoff instead of crashing the whole app (Koyeb would
+    # restart it into a crash loop on a transient network/DNS hiccup).
+    last_exc = None
+    for attempt in range(1, 6):
+        try:
+            await _client.admin.command("ping")
+            break
+        except Exception as exc:
+            last_exc = exc
+            if attempt < 5:
+                LOGGER.warning("GlobalDB ping failed (attempt %d/5): %s — retrying…", attempt, exc)
+                await asyncio.sleep(min(5 * attempt, 20))
+    else:
+        LOGGER.error("GlobalDB unreachable after 5 attempts: %s", last_exc)
+        raise last_exc
     _db = _client[config.DB_NAME]
     asyncio.create_task(_ensure_indexes_and_seed())
     LOGGER.info(f"GlobalDB connected: {config.DB_NAME}")

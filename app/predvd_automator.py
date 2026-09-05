@@ -109,6 +109,7 @@ WEBDL_REGEX = re.compile(r'\b(web[-\s]?dl|webdl|bluray|blu[-\s]?ray|bd[-\s]?rip|
 TAMIL_REGEX = re.compile(r'\b(tamil|tam|multi)\b', re.IGNORECASE)
 
 _running = False
+_iteration_lock = asyncio.Lock()
 _task: Optional[asyncio.Task] = None
 _last_check_time: Optional[float] = None
 _last_check_status: str = "Idle"
@@ -236,6 +237,88 @@ async def fetch_feed(feed_url: Optional[str] = None) -> List[Dict[str, Any]]:
 
 def _movie_key(m: Dict[str, Any]):
     return m.get("imdbId") or m.get("name") or m.get("titleGuess") or m.get("rawTitle")
+
+
+# ---------------------------------------------------------------------------
+# Stable dedup ledger (survives imdbId flip-flops & title punctuation)
+# ---------------------------------------------------------------------------
+_SENT_COL = "predvd_sent"
+
+
+def _norm_title(title: str) -> str:
+    """Lowercase, letters/digits only — punctuation/apostrophe/whitespace safe.
+
+    Apostrophes are removed (joining letters: "I'm" -> "im"); other punctuation
+    becomes a separator, so title variants across scrapes collapse to one key.
+    """
+    t = str(title or "").lower().replace("'", "").replace("’", "")
+    return re.sub(r"[^a-z0-9]+", " ", t).strip()
+
+
+def _title_year_key(title: str, year) -> Optional[str]:
+    norm = _norm_title(title)
+    if not norm:
+        return None
+    try:
+        y = int(year)
+    except (TypeError, ValueError):
+        y = None
+    return f"{norm}|{y}" if y else norm
+
+
+def _magnet_btih(magnet: str) -> Optional[str]:
+    """Extract the BTIH info-hash from a magnet link (stable magnet identity)."""
+    try:
+        qs = str(magnet).split("?", 1)[1]
+        params = dict(p.split("=", 1) for p in qs.split("&") if "=" in p)
+        xt = params.get("xt", "")
+        m = re.search(r"btih:([a-zA-Z0-9]+)", xt)
+        return m.group(1).lower() if m else None
+    except Exception:
+        return None
+
+
+async def already_leeched(title: str, year, magnet_url: str, auto: bool) -> bool:
+    """True if this title+year (or this exact magnet) was already sent.
+
+    Auto-leeches are blocked on either the stable title+year key or the magnet
+    btih. Manual clicks are blocked only on an identical magnet (so you can still
+    intentionally re-send a movie), but the same magnet never double-sends.
+    """
+    try:
+        ty = _title_year_key(title, year)
+        btih = _magnet_btih(magnet_url)
+        ors = []
+        if btih:
+            ors.append({"_id": f"btih:{btih}"})
+        if auto:
+            if ty:
+                ors.append({"_id": f"ty:{ty}"})
+        if not ors:
+            return False
+        return await db.col(_SENT_COL).find_one({"$or": ors}, {"_id": 1}) is not None
+    except Exception as exc:
+        LOGGER.warning("[PREDVD] dedup check failed (allowing send): %s", exc)
+        return False
+
+
+async def record_sent(title: str, year, magnet_url: str, auto: bool, info: str = "") -> None:
+    """Persist that a leech command was sent (idempotent on _id)."""
+    now = time.time()
+    docs = []
+    ty = _title_year_key(title, year)
+    if auto and ty:
+        docs.append({"_id": f"ty:{ty}", "kind": "title_year", "title": title,
+                     "year": year, "magnet": magnet_url, "auto": auto, "info": info, "ts": now})
+    btih = _magnet_btih(magnet_url)
+    if btih:
+        docs.append({"_id": f"btih:{btih}", "kind": "btih", "title": title,
+                     "year": year, "magnet": magnet_url, "auto": auto, "info": info, "ts": now})
+    for d in docs:
+        try:
+            await db.col(_SENT_COL).update_one({"_id": d["_id"]}, {"$setOnInsert": d}, upsert=True)
+        except Exception as exc:
+            LOGGER.debug("[PREDVD] ledger write failed: %s", exc)
 
 
 async def ensure_baseline_snapshot(feed_items: List[Dict[str, Any]]) -> int:
@@ -385,7 +468,8 @@ def indexer_is_busy() -> bool:
         return False
 
 
-async def _enqueue_queued_leech(key, title, quality, magnet_url, group_id, command_prefix) -> None:
+async def _enqueue_queued_leech(key, title, quality, magnet_url, group_id, command_prefix,
+                                year=None, auto=True) -> None:
     """Persist a leech request so it survives restarts and sends when idle."""
     doc = {
         "_id": uuid.uuid4().hex,
@@ -395,6 +479,8 @@ async def _enqueue_queued_leech(key, title, quality, magnet_url, group_id, comma
         "magnet_url": magnet_url,
         "group_id": group_id,
         "command_prefix": command_prefix,
+        "year": year,
+        "auto": bool(auto),
         "status": "queued",
         "created_at": time.time(),
     }
@@ -446,11 +532,19 @@ async def drain_queued_leeches() -> int:
     for d in docs:
         if indexer_is_busy():
             break  # indexer started mid-drain; leave the rest for the next tick
+        # Guard against a queued item whose duplicate already went out (e.g. it
+        # was sent by another path while queued). Drop it rather than re-send.
+        is_auto = d.get("auto", True)
+        if await already_leeched(d["title"], d.get("year"), d["magnet_url"], is_auto):
+            LOGGER.info("[PREDVD] queued '%s' already leeched — dropping duplicate", d["title"])
+            await db.col(_QUEUE_COL).delete_one({"_id": d["_id"]})
+            continue
         ok, info = await send_leech_command(d["group_id"], d["command_prefix"], d["magnet_url"], d["title"], d["quality"])
         if not ok:
             LOGGER.warning("[PREDVD] queued send failed (%s); will retry next tick", info)
             break
         sent += 1
+        await record_sent(d["title"], d.get("year"), d["magnet_url"], is_auto, info)
         await db.col(_QUEUE_COL).delete_one({"_id": d["_id"]})
         await _record_leech_history(d.get("key"), d["title"], d["quality"], d["magnet_url"], info)
         await asyncio.sleep(2.0)
@@ -460,7 +554,8 @@ async def drain_queued_leeches() -> int:
 
 
 async def request_leech(magnet_url: str, title: str, quality: str, key=None,
-                        group_id: Optional[str] = None, command_prefix: Optional[str] = None) -> Dict[str, Any]:
+                        group_id: Optional[str] = None, command_prefix: Optional[str] = None,
+                        year=None, auto: bool = True) -> Dict[str, Any]:
     """Gate-aware leech used by BOTH the automator and manual panel leeches.
 
     * Indexer busy  -> persist to queue, return queued=True.
@@ -468,12 +563,21 @@ async def request_leech(magnet_url: str, title: str, quality: str, key=None,
 
     Manual leeches may override `group_id`/`command_prefix` to target one of the
     extra leech groups; the automator leaves both None and uses the primary.
+    `auto=True` (automator) is blocked on a previously-seen title+year or magnet;
+    `auto=False` (manual panel click) is blocked only on an identical magnet.
     """
     magnet_url = (magnet_url or "").strip()
     title = (title or "Manual Leech").strip()
     quality = (quality or "PreDVD").strip()
     if not magnet_url.startswith("magnet:"):
         return {"ok": False, "queued": False, "error": "Invalid magnet URL (must start with magnet:)"}
+
+    # Stable duplicate guard (survives imdbId flip-flops / title punctuation).
+    if await already_leeched(title, year, magnet_url, auto):
+        msg = ("Already leeched this release — skipping duplicate." if auto
+               else "This exact magnet was already sent — skipping duplicate.")
+        LOGGER.info("[PREDVD] skip duplicate leech for '%s' (auto=%s)", title, auto)
+        return {"ok": True, "queued": False, "duplicate": True, "message": msg}
 
     settings = await get_settings()
     group_id = (group_id or "").strip()
@@ -488,7 +592,8 @@ async def request_leech(magnet_url: str, title: str, quality: str, key=None,
         return {"ok": False, "queued": False, "error": "Leech group not configured (set PREDVD_GROUP_ID)."}
 
     if indexer_is_busy():
-        await _enqueue_queued_leech(key, title, quality, magnet_url, group_id, command_prefix)
+        await _enqueue_queued_leech(key, title, quality, magnet_url, group_id, command_prefix,
+                                    year=year, auto=auto)
         if key:
             await db.col("predvd_snapshot").update_one(
                 {"_id": key},
@@ -502,6 +607,7 @@ async def request_leech(magnet_url: str, title: str, quality: str, key=None,
     ok, info = await send_leech_command(group_id, command_prefix, magnet_url, title, quality)
     if not ok:
         return {"ok": False, "queued": False, "error": info}
+    await record_sent(title, year, magnet_url, auto, info)
     await _record_leech_history(key, title, quality, magnet_url, info)
     return {"ok": True, "queued": False, "message": f"Leech command sent for {title}! ({info})"}
 
@@ -511,6 +617,15 @@ async def request_leech(magnet_url: str, title: str, quality: str, key=None,
 # ---------------------------------------------------------------------------
 
 async def process_feed_iteration() -> Dict[str, Any]:
+    """Public entry: serialized so a manual sync and an automator tick never run
+    a feed iteration concurrently (which could double-send)."""
+    if _iteration_lock.locked():
+        return {"ok": True, "skipped": "already_running"}
+    async with _iteration_lock:
+        return await _process_feed_iteration_impl()
+
+
+async def _process_feed_iteration_impl() -> Dict[str, Any]:
     global _last_check_time, _last_check_status
     _last_check_time = time.time()
     _last_check_status = "Running"
@@ -562,11 +677,23 @@ async def process_feed_iteration() -> Dict[str, Any]:
                     title, m.get("year", ""), len(selected), min_size_mb)
 
         for q in selected:
-            res = await request_leech(q["magnet_url"], title, q["quality"], key=key)
+            res = await request_leech(q["magnet_url"], title, q["quality"], key=key,
+                                      year=m.get("year"), auto=True)
             if res.get("queued"):
                 queued += 1
                 LOGGER.info("[PREDVD] '%s' queued (indexer busy)", title)
                 break  # next tick / drain handles it
+            if res.get("duplicate"):
+                # Ledger says it was already sent (e.g. an imdbId flip-flop).
+                # Reconcile the snapshot so it's skipped going forward.
+                await db.col("predvd_snapshot").update_one(
+                    {"_id": key},
+                    {"$set": {"leeched": True, "queued": False, "title": title,
+                              "leeched_at": time.time()}},
+                    upsert=True,
+                )
+                LOGGER.info("[PREDVD] '%s' already leeched — reconciled snapshot", title)
+                break
             if not res.get("ok"):
                 LOGGER.warning("[PREDVD] send failed for '%s': %s", title, res.get("error"))
                 break  # leave for next tick (snapshot not marked)
