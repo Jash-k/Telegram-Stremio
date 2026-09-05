@@ -34,34 +34,46 @@ def col(name: str):
 
 
 async def connect() -> None:
+    """Initialize the MongoDB client WITHOUT blocking app startup.
+
+    We assign the DB handle immediately (Motor connects lazily and retries
+    automatically on every operation), so uvicorn binds the port and passes
+    Koyeb's TCP health check even if Atlas is momentarily unreachable on a
+    cold boot. The actual connectivity ping + schema seed run in the background.
+    """
     global _client, _db
     if not config.MONGO_URI:
         raise RuntimeError("MONGO_URI is not configured")
     _client = AsyncIOMotorClient(
         config.MONGO_URI,
-        serverSelectionTimeoutMS=15000,
-        connectTimeoutMS=15000,
+        serverSelectionTimeoutMS=8000,
+        connectTimeoutMS=8000,
         maxPoolSize=50,
     )
-    # A fresh/cold instance can take a few tries to reach Atlas. Retry the
-    # initial ping with backoff instead of crashing the whole app (Koyeb would
-    # restart it into a crash loop on a transient network/DNS hiccup).
-    last_exc = None
-    for attempt in range(1, 6):
+    _db = _client[config.DB_NAME]
+    asyncio.create_task(_background_connect_and_seed())
+
+
+async def _background_connect_and_seed() -> None:
+    """Confirm Atlas connectivity with retries, then seed indexes/catalogs.
+
+    Runs outside the lifespan so a slow first contact never delays the health
+    check. Motor retries any later query itself once the network is up.
+    """
+    for attempt in range(1, 7):
         try:
             await _client.admin.command("ping")
-            break
+            LOGGER.info(f"GlobalDB connected: {config.DB_NAME}")
+            try:
+                await _ensure_indexes_and_seed()
+            except Exception as exc:
+                LOGGER.warning(f"Background schema check error: {exc}")
+            return
         except Exception as exc:
-            last_exc = exc
-            if attempt < 5:
-                LOGGER.warning("GlobalDB ping failed (attempt %d/5): %s — retrying…", attempt, exc)
-                await asyncio.sleep(min(5 * attempt, 20))
-    else:
-        LOGGER.error("GlobalDB unreachable after 5 attempts: %s", last_exc)
-        raise last_exc
-    _db = _client[config.DB_NAME]
-    asyncio.create_task(_ensure_indexes_and_seed())
-    LOGGER.info(f"GlobalDB connected: {config.DB_NAME}")
+            LOGGER.warning("GlobalDB not reachable yet (attempt %d/6): %s — retrying in background…",
+                           attempt, exc)
+            await asyncio.sleep(min(5 * attempt, 20))
+    LOGGER.error("GlobalDB still unreachable after background retries; queries will retry via Motor.")
 
 
 async def _ensure_indexes_and_seed() -> None:
