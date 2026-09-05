@@ -78,6 +78,14 @@ async def lifespan(app: FastAPI):
 
         keepalive_task = asyncio.create_task(keepalive_loop())
 
+    # Reliable external trigger for the mv_scrapper GitHub Actions workflow
+    # (workflow_dispatch every GITHUB_DISPATCH_MINUTES). No-op without a token.
+    github_dispatch_task = None
+    if config.GITHUB_DISPATCH_TOKEN:
+        from app.keepalive import github_dispatch_loop
+
+        github_dispatch_task = asyncio.create_task(github_dispatch_loop())
+
     # Start PreDVD Leech Automator loop
     from app import predvd_automator
     predvd_automator.start()
@@ -111,6 +119,8 @@ async def lifespan(app: FastAPI):
     watchdog_task.cancel()
     if keepalive_task:
         keepalive_task.cancel()
+    if github_dispatch_task:
+        github_dispatch_task.cancel()
     from app import client as client_mod
 
     await client_mod.stop()

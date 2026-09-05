@@ -103,6 +103,18 @@ FLOOD_COOLDOWN_SECONDS = _int("FLOOD_COOLDOWN_SECONDS", 12)
 # Self-ping interval (minutes) to defeat Koyeb scale-to-zero.
 KEEPALIVE_MINUTES = _int("KEEPALIVE_MINUTES", 15)
 
+# --- External 1TamilMV scraper trigger (GitHub Actions workflow_dispatch) ----
+# Your mv_scrapper repo runs on GitHub Actions. Instead of relying on GitHub's
+# flaky scheduled runs, this app pokes the workflow's dispatch API on a timer so
+# it runs reliably. Set GITHUB_DISPATCH_TOKEN to enable (fine-grained PAT with
+# Actions: Read+write on the mv_scrapper repo). Leave blank to disable.
+GITHUB_DISPATCH_TOKEN = os.getenv("GITHUB_DISPATCH_TOKEN", "").strip()
+GITHUB_DISPATCH_OWNER = os.getenv("GITHUB_DISPATCH_OWNER", "Jash-k").strip()
+GITHUB_DISPATCH_REPO = os.getenv("GITHUB_DISPATCH_REPO", "mv_scrapper").strip()
+GITHUB_DISPATCH_WORKFLOW = os.getenv("GITHUB_DISPATCH_WORKFLOW", "scrape.yml").strip()
+GITHUB_DISPATCH_REF = os.getenv("GITHUB_DISPATCH_REF", "main").strip()
+GITHUB_DISPATCH_MINUTES = _int("GITHUB_DISPATCH_MINUTES", 30)
+
 # Periodic incremental channel re-scan (the every-5-minutes background indexer).
 # New files are ALREADY indexed in real time by the live update handlers, so this
 # periodic scan is a redundant backup that competes with the web panel and with
