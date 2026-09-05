@@ -8,12 +8,21 @@ import time
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ASCENDING, DESCENDING
+from pymongo.errors import PyMongoError
 
 from . import config
 from .logger import LOGGER
 
 _client: AsyncIOMotorClient = None
 _db = None
+# Health flag used by background loops to skip work (and skip log spam) while
+# Atlas is unreachable. Set by the persistent _db_monitor loop.
+connected: bool = False
+_seeded: bool = False
+
+
+def is_connected() -> bool:
+    return connected
 
 CATALOGS = [
     {"_id": "tamil_movies", "type": "movie", "name": "Tamil Movies", "order": 1},
@@ -51,29 +60,45 @@ async def connect() -> None:
         maxPoolSize=50,
     )
     _db = _client[config.DB_NAME]
-    asyncio.create_task(_background_connect_and_seed())
+    asyncio.create_task(_db_monitor())
 
 
-async def _background_connect_and_seed() -> None:
-    """Confirm Atlas connectivity with retries, then seed indexes/catalogs.
+async def _db_monitor() -> None:
+    """Persistent health + seed loop.
 
-    Runs outside the lifespan so a slow first contact never delays the health
-    check. Motor retries any later query itself once the network is up.
+    Runs forever (outside the lifespan so it never blocks the health check).
+    Pings Atlas on a slow cadence; when reachable it marks `connected=True`
+    (background loops resume) and seeds indexes/catalogs once. While down it
+    logs a single concise line and keeps `connected=False` so loops skip work
+    instead of raising an 8 s timeout every tick.
     """
-    for attempt in range(1, 7):
+    global connected, _seeded
+    announced_down = False
+    while True:
         try:
             await _client.admin.command("ping")
-            LOGGER.info(f"GlobalDB connected: {config.DB_NAME}")
-            try:
-                await _ensure_indexes_and_seed()
-            except Exception as exc:
-                LOGGER.warning(f"Background schema check error: {exc}")
-            return
+            if not connected:
+                LOGGER.info(f"GlobalDB connected: {config.DB_NAME}")
+            connected = True
+            announced_down = False
+            if not _seeded:
+                try:
+                    await _ensure_indexes_and_seed()
+                    _seeded = True
+                except Exception as exc:
+                    LOGGER.warning("GlobalDB schema seed error (will retry): %s", exc)
         except Exception as exc:
-            LOGGER.warning("GlobalDB not reachable yet (attempt %d/6): %s — retrying in background…",
-                           attempt, exc)
-            await asyncio.sleep(min(5 * attempt, 20))
-    LOGGER.error("GlobalDB still unreachable after background retries; queries will retry via Motor.")
+            connected = False
+            if not announced_down:
+                # First failure — one concise, actionable line; no topology dump.
+                LOGGER.error(
+                    "GlobalDB unreachable (queries return 503, loops paused). "
+                    "Cause is almost always Atlas Network Access not allowing "
+                    "this host — add 0.0.0.0/0 in Atlas → Network Access. [%s]",
+                    type(exc).__name__,
+                )
+                announced_down = True
+        await asyncio.sleep(15 if connected else 20)
 
 
 async def _ensure_indexes_and_seed() -> None:

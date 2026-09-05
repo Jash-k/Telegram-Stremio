@@ -5,8 +5,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
+from pymongo.errors import PyMongoError
 
 from app import __version__, config, db
 from app.logger import LOGGER
@@ -114,7 +115,11 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    indexer.stop_background_watcher()
+    try:
+        from app import indexer as _indexer
+        _indexer.stop_background_watcher()
+    except Exception:
+        pass
     predvd_automator.stop()
     watchdog_task.cancel()
     if keepalive_task:
@@ -194,6 +199,44 @@ app.include_router(stremio.router)
 app.include_router(stream.router)
 app.include_router(admin.router)
 app.include_router(panel.router)
+
+
+# Paths that must keep working even while the DB is down (no Mongo queries).
+_DB_FREE_PATHS = ("/healthz", "/api/admin/global/stream-activity",
+                  "/api/admin/global/index/status")
+
+
+@app.middleware("http")
+async def db_readiness_middleware(request, call_next):
+    """Fail DB-backed API calls FAST (503) when Mongo is known unreachable.
+
+    Without this each request waits for the 8 s server-selection timeout. The
+    live widget / health endpoints stay up; the panel shows a clear message and
+    retries. Streaming and addon JSON still surface via the PyMongo handler.
+    """
+    path = request.url.path
+    is_api = path.startswith("/api/")
+    if is_api and not any(path.startswith(p) for p in _DB_FREE_PATHS) and not db.is_connected():
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Database unavailable. Check MongoDB Atlas Network Access (allow 0.0.0.0/0).",
+                     "db_unavailable": True},
+        )
+    return await call_next(request)
+
+
+# MongoDB unavailable (Atlas allow-list/network outage): return a clean 503 JSON
+# instead of a full ASGI traceback. DB-free endpoints (/healthz, stream-activity)
+# never hit this. Background loops self-pause via db.is_connected().
+@app.exception_handler(PyMongoError)
+async def pymongo_exception_handler(request, exc):
+    LOGGER.warning("DB unavailable for %s %s: %s", request.method, request.url.path,
+                   type(exc).__name__)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Database temporarily unavailable. Check MongoDB Atlas Network Access (allow 0.0.0.0/0). Retrying automatically.",
+                 "db_unavailable": True},
+    )
 
 
 # Redirect unauthenticated browser requests to the login page (as the original does).

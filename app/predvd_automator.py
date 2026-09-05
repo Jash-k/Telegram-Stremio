@@ -712,8 +712,19 @@ async def _process_feed_iteration_impl() -> Dict[str, Any]:
 async def _automator_loop():
     LOGGER.info("[PREDVD] PreDVD automator (send-only) started.")
     await asyncio.sleep(15)  # let DB + userbot boot
+    warned_down = False
     while _running:
         try:
+            # Pause entirely while the DB is unreachable — no per-tick timeout
+            # stack traces. The db monitor flips this back on when Atlas returns.
+            from . import db as _db
+            if not _db.is_connected():
+                if not warned_down:
+                    LOGGER.warning("[PREDVD] DB unreachable — automator paused (will resume automatically).")
+                    warned_down = True
+                await asyncio.sleep(30)
+                continue
+            warned_down = False
             settings = await get_settings()
             poll_mins = int(settings.get("poll_interval_minutes", 15))
             await process_feed_iteration()
@@ -721,7 +732,8 @@ async def _automator_loop():
         except asyncio.CancelledError:
             break
         except Exception as exc:
-            LOGGER.error("[PREDVD] Loop exception: %s", exc)
+            # Concise single-line log (no giant topology dump); back off 60 s.
+            LOGGER.warning("[PREDVD] automator cycle skipped (%s); retry in 60 s.", type(exc).__name__)
             await asyncio.sleep(60)
 
 
