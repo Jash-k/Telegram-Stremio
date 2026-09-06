@@ -110,6 +110,16 @@
             <button onclick="loadDigital()" class="btn btn-primary" style="background:#16a34a; border-color:#15803d; padding:0.4rem 0.8rem; font-size:0.85rem;"><i class="fa-solid fa-rotate"></i> Refresh</button>
         </div>
     </div>
+    <div id="lang-legend" style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:0.7rem; font-size:0.75rem; color:var(--text-sec);">
+        <span style="font-weight:700;"><i class="fa-solid fa-palette"></i> Magnet language:</span>
+        <span><i style="color:#4ade80;" class="fa-solid fa-circle"></i> TA Tamil</span>
+        <span><i style="color:#fb923c;" class="fa-solid fa-circle"></i> TE Telugu</span>
+        <span><i style="color:#2dd4bf;" class="fa-solid fa-circle"></i> ML Malayalam</span>
+        <span><i style="color:#c084fc;" class="fa-solid fa-circle"></i> KN Kannada</span>
+        <span><i style="color:#60a5fa;" class="fa-solid fa-circle"></i> HI Hindi</span>
+        <span><i style="color:#cbd5e1;" class="fa-solid fa-circle"></i> EN English</span>
+        <span><i style="color:#facc15;" class="fa-solid fa-circle"></i> MULTI / Dubbed</span>
+    </div>
     <div class="card" style="padding:0; overflow-x:auto;">
         <table class="table" style="width:100%; border-collapse:collapse; font-size:0.85rem;">
             <thead>
@@ -227,6 +237,16 @@
             <span><i class="fa-solid fa-list" style="color:#0ea5e9;"></i> Live PreDVD Movies in Feed</span>
             <span id="predvd-feed-status-badge" style="font-size:0.75rem; font-weight:normal; color:var(--text-sec);">Loading feed...</span>
         </h4>
+        <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:0.6rem; font-size:0.75rem; color:var(--text-sec);">
+            <span style="font-weight:700;"><i class="fa-solid fa-palette"></i> Magnet language:</span>
+            <span><i style="color:#4ade80;" class="fa-solid fa-circle"></i> TA Tamil</span>
+            <span><i style="color:#fb923c;" class="fa-solid fa-circle"></i> TE Telugu</span>
+            <span><i style="color:#2dd4bf;" class="fa-solid fa-circle"></i> ML Malayalam</span>
+            <span><i style="color:#c084fc;" class="fa-solid fa-circle"></i> KN Kannada</span>
+            <span><i style="color:#60a5fa;" class="fa-solid fa-circle"></i> HI Hindi</span>
+            <span><i style="color:#cbd5e1;" class="fa-solid fa-circle"></i> EN English</span>
+            <span><i style="color:#facc15;" class="fa-solid fa-circle"></i> MULTI / Dubbed</span>
+        </div>
         <div class="table-wrap">
             <table>
                 <thead>
@@ -2088,18 +2108,50 @@ const _feedState = {
 const FALLBACK_POSTER = 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=100';
 const FALLBACK = 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=100';
 
+// Per-magnet language colour coding. Each quality object carries its own
+// `languages` array; the button is tinted by that rip's language so you can
+// tell Tamil / Telugu / Multi etc. apart at a glance.
+const LANG_STYLES = {
+    tamil:     { col: '#4ade80', code: 'TA' },
+    telugu:    { col: '#fb923c', code: 'TE' },
+    malayalam: { col: '#2dd4bf', code: 'ML' },
+    kannada:   { col: '#c084fc', code: 'KN' },
+    hindi:     { col: '#60a5fa', code: 'HI' },
+    english:   { col: '#cbd5e1', code: 'EN' },
+    multi:     { col: '#facc15', code: 'MULTI' },
+};
+
+function langStyleFor(q) {
+    const langs = (q?.languages || []).map(l => String(l).toLowerCase());
+    if (langs.length > 1 || langs.some(l => l.includes('multi') || l.includes('dub'))) {
+        return LANG_STYLES.multi;
+    }
+    const first = langs[0] || '';
+    for (const key of ['tamil', 'telugu', 'malayalam', 'kannada', 'hindi', 'english']) {
+        if (first.includes(key)) return LANG_STYLES[key];
+    }
+    return null; // unknown -> fall back to the tab colour
+}
+
 function qualityButtonHTML(item, baseIdx, qIdx, opts) {
     const o = opts || {};
     const q = item._magnets[qIdx];
     const btnId = `btn-${baseIdx}-${qIdx}`;
     const sizeStr = q.size || '';
-    const bg = o.predvd ? 'rgba(244,63,94,0.12)' : 'rgba(34,197,94,0.10)';
-    const col = o.predvd ? '#f43f5e' : '#22c55e';
-    const bd = o.predvd ? 'rgba(244,63,94,0.35)' : 'rgba(34,197,94,0.35)';
+    const ls = langStyleFor(q);
+    const fallbackCol = o.predvd ? '#f43f5e' : '#22c55e';
+    const col = ls ? ls.col : fallbackCol;
+    const bg = ls ? `${col}22` : (o.predvd ? 'rgba(244,63,94,0.12)' : 'rgba(34,197,94,0.10)');
+    const bd = ls ? `${col}66` : (o.predvd ? 'rgba(244,63,94,0.35)' : 'rgba(34,197,94,0.35)');
     const fn = o.predvd ? 'triggerDirectQualityLeech' : 'triggerDigitalQualityLeech';
+    const langTag = ls
+        ? `<span style="background:${col}; color:#0b0f17; border-radius:4px; padding:0 4px; font-size:0.6rem; font-weight:800; letter-spacing:0.3px;">${ls.code}</span>`
+        : '';
+    const langTitle = (q.languages && q.languages.length) ? q.languages.join(', ') : 'language unknown';
     return `
-        <button id="${btnId}" onclick="${fn}(${baseIdx}, ${qIdx}, '${btnId}')" style="display:inline-flex; align-items:center; gap:5px; background:${bg}; color:${col}; border:1px solid ${bd}; border-radius:6px; padding:4px 8px; font-size:0.75rem; font-weight:700; cursor:pointer; margin:2px 4px 2px 0;" title="${escapeHtml(q.quality || 'File')} (${sizeStr})">
+        <button id="${btnId}" onclick="${fn}(${baseIdx}, ${qIdx}, '${btnId}')" style="display:inline-flex; align-items:center; gap:5px; background:${bg}; color:${col}; border:1px solid ${bd}; border-radius:6px; padding:4px 8px; font-size:0.75rem; font-weight:700; cursor:pointer; margin:2px 4px 2px 0;" title="${escapeHtml(langTitle)} — ${escapeHtml(q.quality || 'File')} (${sizeStr})">
             <i class="fa-solid fa-cloud-arrow-down" style="font-size:0.7rem;"></i>
+            ${langTag}
             <span>${escapeHtml(q.quality || (o.predvd ? 'PreDVD' : 'HD'))}</span>
             <span style="font-weight:normal; opacity:0.85;">(${sizeStr || 'N/A'})</span>
         </button>`;
