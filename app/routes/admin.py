@@ -913,6 +913,37 @@ async def get_leech_targets():
     return {"ok": True, "targets": await predvd_automator.get_leech_targets()}
 
 
+@router.post("/predvd/set-primary-group", dependencies=[Depends(require_auth)])
+async def set_primary_leech_group(request: Request):
+    """Switch the PRIMARY (auto-leech) group to one of the configured groups.
+
+    Lets the operator fail over auto-leeching to a backup group from the panel
+    when the current primary's VPS/bot is down — no redeploy needed.
+    """
+    from app import predvd_automator
+    body = await request.json()
+    group_id = (body.get("group_id") or "").strip()
+    label = (body.get("label") or "").strip()
+    if not group_id:
+        raise HTTPException(status_code=400, detail="group_id is required.")
+    # The target must be a known configured group — the current primary OR any
+    # configured extra group, *including disabled ones* (so the operator can fail
+    # back to a previously-demoted group once its VPS has recovered).
+    settings = await predvd_automator.get_settings()
+    known = {str(settings.get("group_id") or "").strip()}
+    for g in settings.get("manual_groups") or []:
+        known.add(str(g.get("group_id") or "").strip())
+    known.discard("")
+    if group_id not in known:
+        raise HTTPException(status_code=400,
+                            detail="That group is not configured. Add it as an additional leech group first.")
+    res = await predvd_automator.set_primary_group(group_id, label)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("error", "Failed to switch primary group."))
+    return {"ok": True, "message": res.get("message", "Primary group switched."),
+            "settings": res.get("settings")}
+
+
 async def _fetch_feed_cached(settings_feed_url) -> list:
     """Cache the external movies.json fetch for ~2 min (instant tab re-opens)."""
     import time as _t

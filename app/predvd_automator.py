@@ -70,6 +70,79 @@ def get_default_settings() -> Dict[str, Any]:
     }
 
 
+async def set_primary_group(group_id: str, label: str = "") -> Dict[str, Any]:
+    """Make a configured leech group the PRIMARY (auto-leech) target.
+
+    Used at runtime from the panel when the current primary's VPS/bot is down:
+    the operator switches auto-leeching to a backup group without redeploying.
+    The previous primary is demoted into ``manual_groups`` (disabled, so it is
+    out of the manual picker until fixed) — no group config is ever lost.
+    """
+    group_id = str(group_id or "").strip()
+    settings = await get_settings()
+    manual = list(settings.get("manual_groups") or [])
+    current_primary_gid = str(settings.get("group_id") or "").strip()
+
+    if not group_id:
+        return {"ok": False, "error": "No group selected."}
+
+    chosen = None
+    for g in manual:
+        if str(g.get("group_id") or "").strip() == group_id:
+            chosen = dict(g)
+            break
+
+    new_manual: List[Dict[str, Any]] = []
+    if chosen is None:
+        # Promoting a group_id that isn't in the manual list (e.g. typed in).
+        new_group_id = group_id
+        new_prefix = str(settings.get("command_prefix") or "/qbleech").strip() or "/qbleech"
+        new_label = str(label or "Primary (auto)").strip()[:60] or "Primary (auto)"
+    else:
+        new_group_id = str(chosen.get("group_id") or group_id).strip()
+        new_prefix = str(chosen.get("command_prefix") or settings.get("command_prefix") or "/qbleech").strip() or "/qbleech"
+        new_label = str(chosen.get("label") or "Primary (auto)").strip()[:60] or "Primary (auto)"
+        # Drop the promoted group out of the manual list.
+        for g in manual:
+            if str(g.get("group_id") or "").strip() == group_id:
+                continue
+            new_manual.append(g)
+
+    # Demote the old primary into the manual list (disabled) — keep its config.
+    if current_primary_gid and current_primary_gid != new_group_id:
+        new_manual.append({
+            "label": "Previous primary (down)",
+            "group_id": current_primary_gid,
+            "command_prefix": str(settings.get("command_prefix") or "/qbleech").strip() or "/qbleech",
+            "enabled": False,
+        })
+
+    # Dedup manual list by group_id, preserving order.
+    deduped: List[Dict[str, Any]] = []
+    seen = set()
+    for g in new_manual:
+        gid = str(g.get("group_id") or "").strip()
+        if not gid or gid in seen:
+            continue
+        seen.add(gid)
+        deduped.append({
+            "label": str(g.get("label") or "").strip()[:60] or f"Group",
+            "group_id": gid,
+            "command_prefix": str(g.get("command_prefix") or "/qbleech").strip() or "/qbleech",
+            "enabled": bool(g.get("enabled", True)),
+        })
+
+    updated = await save_settings({
+        **settings,
+        "group_id": new_group_id,
+        "command_prefix": new_prefix,
+        "manual_groups": deduped,
+    })
+    LOGGER.info("[PREDVD] Primary auto-leech group switched to %s (%s) by operator", new_label, new_group_id)
+    return {"ok": True, "settings": updated,
+            "message": f"Primary auto-leech group switched to “{new_label}” ({new_group_id})."}
+
+
 async def get_leech_targets() -> List[Dict[str, Any]]:
     """All leech destinations for the manual-leech group picker.
 
