@@ -57,7 +57,15 @@ async def connect() -> None:
         config.MONGO_URI,
         serverSelectionTimeoutMS=8000,
         connectTimeoutMS=8000,
+        socketTimeoutMS=20000,
         maxPoolSize=50,
+        retryWrites=True,
+        retryReads=True,
+        # Heartbeat the topology more often so a dropped Koyeb<->Atlas socket is
+        # detected and re-established quickly instead of stalling queries.
+        heartbeatFrequencyMS=5000,
+        # Keep NAT-mapped idle sockets alive (Koyeb free tier reuses egress IPs).
+        localThresholdMS=15000,
     )
     _db = _client[config.DB_NAME]
     asyncio.create_task(_db_monitor())
@@ -72,8 +80,9 @@ async def _db_monitor() -> None:
     logs a single concise line and keeps `connected=False` so loops skip work
     instead of raising an 8 s timeout every tick.
     """
-    global connected, _seeded
+    global connected, _seeded, _client
     announced_down = False
+    failures = 0
     while True:
         try:
             await _client.admin.command("ping")
@@ -81,6 +90,7 @@ async def _db_monitor() -> None:
                 LOGGER.info(f"GlobalDB connected: {config.DB_NAME}")
             connected = True
             announced_down = False
+            failures = 0
             if not _seeded:
                 try:
                     await _ensure_indexes_and_seed()
@@ -89,12 +99,30 @@ async def _db_monitor() -> None:
                     LOGGER.warning("GlobalDB schema seed error (will retry): %s", exc)
         except Exception as exc:
             connected = False
-            if not announced_down:
-                # First failure — one concise, actionable line; no topology dump.
+            failures += 1
+            # After a run of consecutive failures, throw away the (possibly
+            # wedged) MongoClient and build a fresh one — clears a stale socket
+            # pool/topology that Motor sometimes never recovers on its own.
+            if failures % 4 == 0:
+                try:
+                    _client.close()
+                except Exception:
+                    pass
+                _client = AsyncIOMotorClient(
+                    config.MONGO_URI,
+                    serverSelectionTimeoutMS=8000, connectTimeoutMS=8000,
+                    socketTimeoutMS=20000, maxPoolSize=50,
+                    retryWrites=True, retryReads=True,
+                    heartbeatFrequencyMS=5000,
+                    localThresholdMS=15000,
+                )
+                globals()["_db"] = _client[config.DB_NAME]
+                LOGGER.warning("GlobalDB still unreachable after %d checks — reset Mongo client pool (will keep retrying).", failures)
+            elif not announced_down:
                 LOGGER.error(
-                    "GlobalDB unreachable (queries return 503, loops paused). "
-                    "Cause is almost always Atlas Network Access not allowing "
-                    "this host — add 0.0.0.0/0 in Atlas → Network Access. [%s]",
+                    "GlobalDB connection lost ([%s]). App stays up; queries return 503 "
+                    "and background loops pause until it reconnects (usually a transient "
+                    "Atlas free-tier / host-network blip — it auto-recovers).",
                     type(exc).__name__,
                 )
                 announced_down = True

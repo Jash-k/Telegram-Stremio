@@ -219,7 +219,7 @@ async def db_readiness_middleware(request, call_next):
     if is_api and not any(path.startswith(p) for p in _DB_FREE_PATHS) and not db.is_connected():
         return JSONResponse(
             status_code=503,
-            content={"detail": "Database unavailable. Check MongoDB Atlas Network Access (allow 0.0.0.0/0).",
+            content={"detail": "Database temporarily unreachable; reconnecting automatically.",
                      "db_unavailable": True},
         )
     return await call_next(request)
@@ -234,7 +234,7 @@ async def pymongo_exception_handler(request, exc):
                    type(exc).__name__)
     return JSONResponse(
         status_code=503,
-        content={"detail": "Database temporarily unavailable. Check MongoDB Atlas Network Access (allow 0.0.0.0/0). Retrying automatically.",
+        content={"detail": "Database temporarily unreachable; reconnecting automatically.",
                  "db_unavailable": True},
     )
 
