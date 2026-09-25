@@ -56,37 +56,219 @@ def normalize_global_file_fields(file_doc: dict, indexed_at=None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Combined-episode detection (S01 E01-E05 style packs)
+# Season / episode / combined-pack detection (S01E09, Ep 09, EP (01 - 04), …)
+#
+# Reality-TV / Indian-TVB naming is wildly inconsistent, so we parse it
+# ourselves instead of trusting PTN (which, e.g., misses "Ep 09", returns the
+# wrong season for "Bigg Boss Tamil 10 Ep 05 - 08", and keeps "Ep 09" glued to
+# the title so TMDb matches the wrong show — the cause of the mixed-up
+# Bigg Boss entries).
 # ---------------------------------------------------------------------------
 
-_COMBINED_EPISODES_RE = re.compile(
-    r"E(?:P|PISODE)?[\s._\-\(\[\{]*0*(\d{1,4})[\s._\-\(\)\]\}]*(?:-|–|~|\+|&|,|to)+"
-    r"[\s._\-\(\)\]\}]*(?:E(?:P|PISODE)?[\s._\-\(\)\]\}]*)?0*(\d{1,4})[\s._\-\}\]\)]*(?=\D|$)",
+# "E", "EP", "Eps", "Episode", "Episodes" (case-insensitive). Word-start guard
+# blocks mid-word hits (the E in "COMPLETE1080"), the digit guards block
+# resolutions (Episode 720p ≠ episode 720).
+_EP_TOKEN = r"E(?:P(?:ISOD(?:E|ES))?|PS)"
+
+# S10E09 with optional range (S10E09-E12 or S10E09-12)
+_SERIES_EP_RE = re.compile(
+    r"\bS(?:EASON)?[\s._-]*0*(\d{1,3})[\s._-]*E(?:P)?[\s._-]*0*(\d{1,3})[\s._-]*?"
+    r"(?:(?:-|–|~|to)+[\s._-]*(?:E(?:P)?[\s._-]*)?0*(\d{1,3})(?![\d]))?",
     re.IGNORECASE,
 )
-_COMBINED_SEASON_RE = re.compile(r"S(?:EASON)?[\s._-]*0*(\d{1,3})", re.IGNORECASE)
-_COMBINED_KEYWORD_RE = re.compile(r"(?:\b|#)(?:combined|complete|batch)\b", re.IGNORECASE)
+# EP 01 - 04 / Ep.09-12 / Episodes 1 to 4 / Eps.(01-04) / EP01-EP04
+_EP_RANGE_RE = re.compile(
+    rf"(?<![A-Za-z]){_EP_TOKEN}(?![A-Za-z])[\s._\-]*\(?\s*(?!0*\d{{1,4}}[pk](?:\b|[_.-]))0*(\d{{1,3}})\s*\)?[\s._\-]*"
+    rf"(?:-|–|~|\+|&|to)+[\s._\-]*(?:{_EP_TOKEN}(?![A-Za-z])[\s._\-]*)?\(?\s*0*(\d{{1,3}})\s*\)?(?![\d])",
+    re.IGNORECASE,
+)
+# EP.01.02.03.04 — dot-separated enumerated packs
+_EP_ENUM_RE = re.compile(
+    rf"(?<![A-Za-z]){_EP_TOKEN}\.((?:0*\d{{1,3}}\.){{1,11}}0*\d{{1,3}})(?!\d)",
+    re.IGNORECASE,
+)
+# Ep 1, 2, 3 and 4 (3+ numbers; two-number ranges go to the range regex)
+_EP_LIST_RE = re.compile(
+    rf"(?<![A-Za-z]){_EP_TOKEN}(?![A-Za-z])[\s._\-]+0*(\d{{1,3}})((?:\s*(?:,|&|\+|and|to)\s*0*\d{{1,3}}){{2,}})(?![\d])",
+    re.IGNORECASE,
+)
+# A lone "Ep 09" / "E09" / "Episode 9"
+_EP_SINGLE_RE = re.compile(
+    rf"(?<![A-Za-z]){_EP_TOKEN}(?![A-Za-z])[\s._\-]*\(?\s*(?!0*\d{{1,4}}[pk](?:\b|[_.-]))0*(\d{{1,3}})(?![\d])",
+    re.IGNORECASE,
+)
+# Plain season tokens
+_SEASON_RE = re.compile(r"\bS(?:EASON)?[\s._-]*0*(\d{1,3})\b", re.IGNORECASE)
+# "… Tamil 10 Ep 09" — a bare number directly before the Ep token is the
+# season (reality-show convention: "Bigg Boss Tamil 10", "Indian Idol 15"…).
+_SEASON_BEFORE_EP_RE = re.compile(
+    rf"(?:^|[\s._\-])(\d{{1,2}})[\s._\-]+(?:{_EP_TOKEN}(?![A-Za-z])[\s._\-]*0*\d{{1,3}})",
+    re.IGNORECASE,
+)
+# "combined|complete|batch" keyword — a whole-season pack when no range exists
+_COMBINED_KEYWORD_RE = re.compile(
+    r"(?:\b|#)(?:combined|complete|full season|whole season|all episodes|batch)\b",
+    re.IGNORECASE,
+)
+# dd-mm-yyyy / dd.mm.yy style shoot/air dates that must not look like episodes
+_DATE_NOISE_RE = re.compile(r"\(?\b(?:\d{1,2}[.\-/]\d{1,2}[.\-/]\d{4}|\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2})\b\)?")
+
+_MAX_EPISODE = 400  # daily-soap seasons pass 99 (Bigg Boss ~120/season)
 
 
-def _combined_season(name: str) -> Optional[int]:
-    m = _COMBINED_SEASON_RE.search(name)
-    return int(m.group(1)) if m else None
+def _ep_ok(n: int) -> bool:
+    return 1 <= n <= _MAX_EPISODE
+
+
+def analyze_episodes(filename: str) -> Optional[dict]:
+    """Extract (season, episode range) from a TV filename.
+
+    Returns None when nothing episode-like is present, else::
+
+        {"season": int|None, "start": int|None, "end": int|None}
+
+    ``start is None`` with a season means a *whole-season pack* (keyword-only).
+    ``start == end`` means a single episode; ``start < end`` a combined pack.
+    """
+    if not filename:
+        return None
+    # Multi-line captions: analyze the first line only (rest is promo spam).
+    name = _DATE_NOISE_RE.sub(" ", str(filename).split("\n")[0])
+
+    def _season() -> Optional[int]:
+        m = _SEASON_RE.search(name)
+        if m:
+            sn = int(m.group(1))
+            if sn <= 100:
+                return sn
+        m = _SEASON_BEFORE_EP_RE.search(name)
+        if m:
+            sn = int(m.group(1))
+            if sn <= 100:
+                return sn
+        return None
+
+    m = _EP_ENUM_RE.search(name)
+    if m:
+        nums = [int(x) for x in m.group(1).split(".") if x.isdigit()]
+        nums = [n for n in nums if _ep_ok(n)]
+        if len(nums) >= 2:
+            return {"season": _season(), "start": min(nums), "end": max(nums)}
+    m = _SERIES_EP_RE.search(name)
+    if m:
+        sn, a = int(m.group(1)), int(m.group(2))
+        b = int(m.group(3)) if m.group(3) else a
+        if _ep_ok(a) and _ep_ok(b) and a <= b:
+            return {"season": sn, "start": a, "end": b}
+    m = _EP_RANGE_RE.search(name)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        if _ep_ok(a) and _ep_ok(b) and a <= b:
+            return {"season": _season(), "start": a, "end": b}
+    m = _EP_LIST_RE.search(name)
+    if m:
+        nums = [int(m.group(1))]
+        nums += [int(x) for x in re.findall(r"0*(\d{1,3})", m.group(2))]
+        nums = [n for n in nums if _ep_ok(n)]
+        if len(nums) >= 3:
+            return {"season": _season(), "start": min(nums), "end": max(nums)}
+    m = _EP_SINGLE_RE.search(name)
+    if m:
+        a = int(m.group(1))
+        if _ep_ok(a):
+            return {"season": _season(), "start": a, "end": a}
+    # Keyword-only pack ("Season 2 Complete", "combined batch") — season needed.
+    if _COMBINED_KEYWORD_RE.search(name):
+        sn = _season()
+        if sn is not None:
+            return {"season": sn, "start": None, "end": None}
+    return None
 
 
 def parse_combined_episodes(filename: str) -> Optional[dict]:
-    if not filename:
+    """Back-compat wrapper around analyze_episodes (only range/pack hits)."""
+    info = analyze_episodes(filename)
+    if not info:
         return None
-    m = _COMBINED_EPISODES_RE.search(filename)
-    if m:
-        start, end = int(m.group(1)), int(m.group(2))
-        if 1 <= start < end <= 99:
-            return {"season": _combined_season(filename) or 1, "start": start, "end": end}
-    if _COMBINED_KEYWORD_RE.search(filename):
-        season = _combined_season(filename)
-        if season is not None:
-            return {"season": season, "start": None, "end": None}
+    start, end = info.get("start"), info.get("end")
+    if start is None:  # keyword-only season pack
+        if _COMBINED_KEYWORD_RE.search(str(filename).split("\n")[0]):
+            return {"season": info["season"], "start": None, "end": None}
+        return None
+    if end is not None and end > start:  # genuine combined range
+        return {"season": info["season"] or 1, "start": start, "end": end}
     return None
 
+
+def is_series_filename(filename: str) -> bool:
+    """True when a filename carries any S/E structure (incl. single episodes)."""
+    return analyze_episodes(filename) is not None
+
+
+# --- Series title extraction for TMDb matching ------------------------------
+# Strips every S/E token, bracketed tags and site tokens, then cuts the
+# technical tail — but NEVER at language words, because for Indian TV the
+# language is part of the show name ("Bigg Boss Tamil" ≠ Hindi "Bigg Boss").
+_TITLE_SE_STRIP_RES = (
+    _SERIES_EP_RE,
+    _EP_RANGE_RE,
+    _EP_ENUM_RE,
+    _EP_LIST_RE,
+    _EP_SINGLE_RE,
+    re.compile(r"\bS(?:EASON)?[\s._-]*0*\d{1,3}\b", re.IGNORECASE),
+    re.compile(r"\bSEASONS?\s*\d{1,3}\b", re.IGNORECASE),
+)
+_TITLE_NOISE_TOKENS = {
+    "mkv", "mp4", "avi", "mov", "m4v", "flv", "webm", "wmv", "ts",
+    "www", "http", "https", "pack", "parts", "part",
+}
+_SERIES_TAIL_RE = re.compile(
+    r"^(?:\d{3,4}p|\d{1,2}k|uhd|4k|8k|web[-\s]?dl|webdl|web[-\s]?rip|webrip|hdrip|hd[-\s]?rip|"
+    r"bluray|blu[-\s]?ray|brrip|bdrip|dvdrip|dvd[-\s]?rip|predvd|pre[-\s]?dvd|camrip|hdcam|telecine|"
+    r"hdtc|hd[-\s]?tc|hdts|hd[-\s]?ts|hdtv|hevc|x264|x265|h\.?264|h\.?265|avc|aac|ac3|dts(?:-hd)?|eac3|"
+    r"dd5\.1|ddp5\.1|5\.1|2\.0|7\.1|dd|ddp|esub|esubs|subs|proper|repack|hdr|sdr|10-bit|8-bit|"
+    r"amzn|hotstar|disney|netflix|hulu|seq|eps?|episod(?:e|es)?|seasons?)$",
+    re.IGNORECASE,
+)
+
+
+def _title_variants(title: str) -> list[str]:
+    """'Bigg Boss Tamil 10' -> ['Bigg Boss Tamil 10', 'Bigg Boss Tamil']."""
+    out = [title]
+    cur = title
+    while True:
+        nxt = re.sub(r"[\s._-]+\d{1,2}$", "", cur).strip()
+        if not nxt or nxt == cur or len(nxt) < 3:
+            break
+        out.append(nxt)
+        cur = nxt
+    return out
+
+
+def series_title_candidates(filename: str) -> list[str]:
+    """Likely TMDb series-search titles for a filename, best-first."""
+    name = clean_filename(str(filename or "").split("\n")[0])
+    name = _normalize_separators(name)
+    name = _DATE_NOISE_RE.sub(" ", name)
+    name = re.sub(r"\(?\s*(?:19|20)\d{2}\s*\)?", " ", name)   # (2024) / 2024
+    name = re.sub(r"\[[^\]]*\d[^\]]*\]", " ", name)            # [1080p] [Group]
+    for rx in _TITLE_SE_STRIP_RES:
+        name = rx.sub(" ", name)
+    toks: list[str] = []
+    for t in name.split():
+        bare = t.strip("()-[]{},+.")
+        if not bare:
+            continue
+        if bare.lower() in _TITLE_NOISE_TOKENS or bare.lower() in _SITE_NAME_TOKENS:
+            continue
+        if _SERIES_TAIL_RE.match(bare):
+            break  # technical tail starts here — the rest is never the title
+        toks.append(bare)
+    out: list[str] = []
+    for title in _title_variants(re.sub(r"\s+", " ", " ".join(toks)).strip(" ._-()[]{}")):
+        if len(title) >= 3 and title not in out:
+            out.append(title)
+    return out
 
 # ---------------------------------------------------------------------------
 # Filename cleaning

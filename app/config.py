@@ -120,6 +120,13 @@ GITHUB_DISPATCH_MINUTES = _int("GITHUB_DISPATCH_MINUTES", 30)
 # periodic scan is a redundant backup that competes with the web panel and with
 # streaming for CPU/network. OFF by default; set true only if you need it.
 BACKGROUND_SYNC_ENABLED = os.getenv("BACKGROUND_SYNC_ENABLED", "false").lower() in ("true", "1", "yes")
+
+# One-shot series-metadata self-heal at boot: re-derives season/episode ranges
+# from stored filenames with the current parser, relinks mis-matched shows
+# (e.g. Bigg Boss Tamil → Hindi Bigg Boss) and retries the unindexed queue.
+# Idempotent — after the first successful run it is a fast no-op. Set to
+# "false" to skip it (e.g. after you have already repaired once).
+SERIES_REPAIR_ON_START = os.getenv("SERIES_REPAIR_ON_START", "true").lower() in ("true", "1", "yes")
 BACKGROUND_SYNC_MINUTES = _int("BACKGROUND_SYNC_MINUTES", 5)
 
 # ---------------------------------------------------------------------------

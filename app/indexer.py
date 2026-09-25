@@ -17,6 +17,7 @@ from . import config, db
 from .logger import LOGGER
 from .metadata import format_tmdb_image, tmdb_details, tmdb_search, year_number
 from .parser import (
+    analyze_episodes,
     clean_filename,
     clean_movie_title,
     determine_catalog,
@@ -26,6 +27,7 @@ from .parser import (
     global_file_key,
     languages_from_filename,
     parse_combined_episodes,
+    series_title_candidates,
     source_from_filename,
 )
 
@@ -382,18 +384,28 @@ async def remove_file_reference(chat_id, message_id) -> int:
 
 
 async def _process_message(chat_id: int, message) -> str | None:
-    try:
-        media = getattr(message, "video", None) or getattr(message, "document", None) or getattr(message, "animation", None)
-        if not media:
-            return None
-        
+    media = getattr(message, "video", None) or getattr(message, "document", None) or getattr(message, "animation", None)
+    if not media:
+        return None
+    size = int(getattr(media, "file_size", 0) or 0)
+    filename = video_filename(message)
+    if not filename:
         file_key = global_file_key(chat_id, message.id)
-        size = getattr(media, "file_size", 0) or 0
-        filename = video_filename(message)
-        if not filename:
-            raw_name = getattr(media, "file_name", None) or getattr(message, "caption", None) or "unnamed_video"
-            await log_unindexed(file_key, raw_name, size, chat_id, message.id, "Non-Video / Unsupported Media Format")
-            return None
+        raw_name = getattr(media, "file_name", None) or getattr(message, "caption", None) or "unnamed_video"
+        await log_unindexed(file_key, raw_name, size, chat_id, message.id, "Non-Video / Unsupported Media Format")
+        return None
+    return await index_filename(chat_id, int(message.id), filename, size)
+
+
+async def index_filename(chat_id: int, message_id: int, filename: str, size: int) -> str | None:
+    """Index ONE video into GlobalDB from its stored filename/size.
+
+    Shared by the live hook, the history scan, the startup repair pass and
+    manual retries — the Telegram message itself is never re-fetched.
+    """
+    try:
+        file_key = global_file_key(chat_id, message_id)
+        size = int(size or 0)
 
         try:
             parsed = PTN.parse(filename)
@@ -421,27 +433,52 @@ async def _process_message(chat_id: int, message) -> str | None:
                 if not year and fb_year:
                     year = fb_year
 
-        if not title:
-            await log_unindexed(file_key, filename, size, chat_id, message.id, "No Title Found", title, year)
-            return None
-
-        combined = parse_combined_episodes(filename)
+        # TV structure is decided by our own parser, NOT PTN: PTN misses
+        # "Ep 09", mis-reads reality-show seasons, and keeps "Ep NN" inside
+        # the title — which is what made Bigg Boss entries mix together.
+        ep_info = analyze_episodes(filename)
         season = first_int(parsed.get("season"))
         ep_start, ep_end = episode_bounds(parsed.get("episode"))
-        media_type = "series" if (season is not None or ep_start is not None or combined) else "movie"
+        if ep_info:
+            season = ep_info["season"] or season
+            if ep_info["start"] is not None:
+                ep_start, ep_end = ep_info["start"], ep_info["end"]
+            else:
+                ep_start = ep_end = None  # keyword-only whole-season pack
+        is_series = ep_info is not None or season is not None or ep_start is not None
+        # The Stremio videos list only shows files carrying a season number;
+        # most Indian TV uploads are season-1 packs/episodes without one.
+        if is_series and season is None:
+            season = 1
+        # Series search titles keep the language word ("Bigg Boss Tamil" is a
+        # DIFFERENT show than Hindi "Bigg Boss").
+        series_cands = series_title_candidates(filename) if is_series else []
+
+        if not title and not series_cands:
+            await log_unindexed(file_key, filename, size, chat_id, message_id, "No Title Found", title, year)
+            return None
+
+        media_type = "series" if is_series else "movie"
         tmdb_type = "tv" if media_type == "series" else "movie"
 
-        res = await tmdb_search(title, tmdb_type, year)
-        if not res and year is not None:
-            res = await tmdb_search(title, tmdb_type, None)
+        res = None
+        if media_type == "series":
+            for cand in series_cands:
+                res = await tmdb_search(cand, "tv")
+                if res:
+                    break
+        if not res and title:
+            res = await tmdb_search(title, tmdb_type, year)
+            if not res and year is not None:
+                res = await tmdb_search(title, tmdb_type, None)
         if not res:
-            await log_unindexed(file_key, filename, size, chat_id, message.id, "TMDb Match Failed", title, year)
+            await log_unindexed(file_key, filename, size, chat_id, message_id, "TMDb Match Failed", title, year)
             return None
 
         tmdb_id = res["id"]
         details = await tmdb_details(tmdb_type, tmdb_id)
         if not details:
-            await log_unindexed(file_key, filename, size, chat_id, message.id, "TMDb Details Failed", title, year)
+            await log_unindexed(file_key, filename, size, chat_id, message_id, "TMDb Details Failed", title, year)
             return None
 
         catalog = determine_catalog(details, media_type, filename)
@@ -493,10 +530,10 @@ async def _process_message(chat_id: int, message) -> str | None:
             # Drives cleanup that removes PreDVD once an official print arrives.
             "source": source_from_filename(filename),
             "chat_id": int(chat_id),
-            "message_id": int(message.id),
-            "season": first_int(combined["season"]) if combined else season,
-            "episode_start": first_int(combined["start"]) if combined else ep_start,
-            "episode_end": first_int(combined["end"]) if combined else ep_end,
+            "message_id": int(message_id),
+            "season": season,
+            "episode_start": ep_start,
+            "episode_end": ep_end,
             "indexed_at": time.time(),
         }
         await db.col("files").update_one({"_id": file_key}, {"$set": file_data}, upsert=True)
@@ -508,7 +545,7 @@ async def _process_message(chat_id: int, message) -> str | None:
                 await db.col("meta").delete_one({"_id": old_meta_id})
         return doc_id
     except Exception as exc:
-        LOGGER.error(f"[INDEXER] Exception processing message {getattr(message, 'id', '?')} in {chat_id}: {exc}")
+        LOGGER.error(f"[INDEXER] Exception processing message {message_id} in {chat_id}: {exc}")
         return None
 
 
@@ -746,3 +783,122 @@ def stop_background_watcher() -> None:
     _bg_sync_stop_event.set()
     if _bg_sync_task and not _bg_sync_task.done():
         _bg_sync_task.cancel()
+
+
+# ---------------------------------------------------------------------------
+# Startup self-heal for series metadata (reparses stored filenames with the
+# current parser — no Telegram traffic needed).
+# ---------------------------------------------------------------------------
+
+
+def _norm_title(t: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(t or "").casefold())
+
+
+async def repair_series_index(max_updates: int = 6000, max_relinks: int = 300,
+                              unindexed_retry_limit: int = 300) -> dict:
+    """Re-derive season/episode data from stored filenames using the current parser.
+
+    Three phases, all idempotent (only documents that actually change are
+    touched, so the next boot is a fast no-op):
+      1. Backfill/correct ``season``/``episode_start``/``episode_end`` on files
+         saved with missing or broken fields by the old parser — this fixes
+         combined EP packs leaking into every episode's stream list.
+      2. Full re-index of series files linked to a MOVIE meta or to a show
+         with a different title (the "Bigg Boss Tamil" → Hindi "Bigg Boss" mixup).
+      3. Retry of the unindexed queue with the new parser.
+
+    Never raises: a dead DB simply ends the pass.
+    """
+    stats = {"scanned": 0, "fields_fixed": 0, "relinked": 0,
+             "unindexed_retried": 0, "unindexed_fixed": 0}
+    if not db.is_connected():
+        return {**stats, "skipped": "db unavailable"}
+    try:
+        meta_cache: dict = {}
+        relink_budget = max_relinks
+        async for fdoc in db.col("files").find(
+            {},
+            {"filename": 1, "season": 1, "episode_start": 1, "episode_end": 1,
+             "meta_id": 1, "chat_id": 1, "message_id": 1, "size": 1},
+        ).batch_size(200):
+            if stats["scanned"] >= max_updates:
+                break
+            stats["scanned"] += 1
+            filename = str(fdoc.get("filename") or "")
+            if not filename:
+                continue
+            info = analyze_episodes(filename)
+            if not info:
+                continue
+            cur_season = first_int(fdoc.get("season"))
+            cur_start = first_int(fdoc.get("episode_start"))
+            cur_end = first_int(fdoc.get("episode_end"))
+            want_season = info["season"] or cur_season or 1
+            want_start = info["start"] if info["start"] is not None else cur_start
+            want_end = info["end"] if info["end"] is not None else cur_end
+            if want_end is not None and want_start is not None and want_end < want_start:
+                want_start, want_end = want_end, want_start
+
+            # Phase 2: wrong meta (movie-typed, or a different show title)?
+            if relink_budget > 0:
+                meta_id = fdoc.get("meta_id")
+                meta = meta_cache.get(meta_id, "∅")
+                if meta == "∅" and meta_id:
+                    meta = await db.col("meta").find_one(
+                        {"_id": meta_id}, {"media_type": 1, "title": 1}) or {}
+                    meta_cache[meta_id] = meta
+                need_relink = False
+                if meta:
+                    mtype = meta.get("media_type")
+                    if mtype == "movie" and info["start"] is not None:
+                        need_relink = True
+                    elif mtype == "series":
+                        mt = _norm_title(meta.get("title"))
+                        cands = {_norm_title(c) for c in series_title_candidates(filename)}
+                        if mt and cands and mt not in cands:
+                            need_relink = True
+                if need_relink:
+                    relink_budget -= 1
+                    try:
+                        if await index_filename(int(fdoc["chat_id"]), int(fdoc["message_id"]),
+                                                filename, int(fdoc.get("size") or 0)):
+                            stats["relinked"] += 1
+                            continue  # re-index wrote fresh fields already
+                    except Exception as exc:
+                        LOGGER.debug("[REPAIR] relink failed for %s: %s", fdoc.get("_id"), exc)
+
+            # Phase 1: field backfill.
+            if (cur_season, cur_start, cur_end) != (want_season, want_start, want_end):
+                await db.col("files").update_one({"_id": fdoc["_id"]}, {"$set": {
+                    "season": want_season, "episode_start": want_start, "episode_end": want_end}})
+                stats["fields_fixed"] += 1
+                if stats["fields_fixed"] % 250 == 0:
+                    await asyncio.sleep(0.2)  # let interactive traffic win
+
+        # Phase 3: retry the unindexed queue with the new parser.
+        left = unindexed_retry_limit
+        async for u in db.col("unindexed").find(
+            {}, {"filename": 1, "chat_id": 1, "message_id": 1, "size": 1}
+        ).batch_size(50):
+            if left <= 0:
+                break
+            fn = str(u.get("filename") or "")
+            if not fn or fn in ("unnamed_video",) or u.get("reason") == "Non-Video / Unsupported Media Format":
+                continue
+            left -= 1
+            stats["unindexed_retried"] += 1
+            try:
+                if await index_filename(int(u["chat_id"]), int(u["message_id"]),
+                                        fn, int(u.get("size") or 0)):
+                    stats["unindexed_fixed"] += 1
+            except Exception as exc:
+                LOGGER.debug("[REPAIR] unindexed retry failed for %s: %s", u.get("_id"), exc)
+            await asyncio.sleep(0.1)  # TMDb rate-limit courtesy
+
+        if any(v for k, v in stats.items() if k != "scanned"):
+            LOGGER.info("[REPAIR] series index self-heal: %s", stats)
+        return stats
+    except Exception as exc:  # noqa: BLE001 — self-heal must never break boot
+        LOGGER.warning("[REPAIR] series index self-heal aborted: %s", exc)
+        return {**stats, "error": str(exc)[:200]}

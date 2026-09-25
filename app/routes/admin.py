@@ -323,12 +323,19 @@ async def _map_file(file_doc, tmdb_id, media_type, is_video_song, details, se_ov
         upsert=True,
     )
 
-    combined = parse_combined_episodes(filename)
+    # Default S/E from filename using the same engine as the indexer (PTN
+    # misses "Ep 09" and reality-show seasons) …
+    from app.parser import analyze_episodes
+    _info = analyze_episodes(filename)
     ep_start, ep_end = episode_bounds(parsed.get("episode"))
-    # Default S/E from filename (kept behaviour)…
-    season = first_int(combined["season"]) if combined else first_int(parsed.get("season"))
-    estart = first_int(combined["start"]) if combined else ep_start
-    eend = first_int(combined["end"]) if combined else ep_end
+    season = first_int(parsed.get("season"))
+    estart, eend = ep_start, ep_end
+    if _info:
+        season = _info["season"] or season
+        if media_type == "series" and season is None:
+            season = 1
+        if _info["start"] is not None:
+            estart, eend = _info["start"], _info["end"]
     # …but a manual override (TV mapping) always wins.
     if se_override:
         season = first_int(se_override.get("season"))

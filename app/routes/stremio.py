@@ -268,13 +268,20 @@ async def meta(token: str, media_type: str, id: str):
 
         files = await db.col("files").find(
             {"meta_id": g_meta["_id"]},
-            {"season": 1, "episode_start": 1, "episode_end": 1},
+            {"season": 1, "episode_start": 1, "episode_end": 1, "filename": 1},
         ).to_list(None)
         episode_keys, pack_seasons = set(), set()
         for fdoc in files:
             season = P.first_int(fdoc.get("season"))
             start = P.first_int(fdoc.get("episode_start"))
             end = P.first_int(fdoc.get("episode_end"))
+            if start is None:
+                _info = P.analyze_episodes(str(fdoc.get("filename") or ""))
+                if _info and _info.get("start") is not None:
+                    start = _info["start"]
+                    end = _info["end"] or start
+                    if season is None:
+                        season = _info["season"] or 1
             if season is None:
                 continue
             if start is None:
@@ -356,12 +363,32 @@ async def stream(token: str, media_type: str, id: str):
         # Pre-computed technical metadata (fast path; no PTN at request time).
         codec = fdoc.get("codec") or ""
         audio = fdoc.get("audio") or ""
+        # Episode range: stored DB fields first; re-parse the filename for
+        # legacy docs indexed before the parser fix. This is what stops an
+        # E01-04 pack from leaking into EVERY episode's list (ep 9 showed it).
+        f_start = P.first_int(fdoc.get("episode_start"))
+        f_end = P.first_int(fdoc.get("episode_end"))
+        if f_start is None:
+            _info = P.analyze_episodes(clean_name)
+            if _info and _info.get("start") is not None:
+                f_start = _info["start"]
+                f_end = _info["end"] or f_start
+        if episode is not None and f_start is not None:
+            _hi = f_end if f_end is not None else f_start
+            if not (f_start <= episode <= _hi):
+                continue  # strict: this file does not contain the requested episode
         name = f"🌐 GLOBAL {quality}"
-        combined = P.parse_combined_episodes(clean_name)
-        if combined:
-            label = "Full" if combined.get("start") is None else f"E{combined['start']:02d}-E{combined['end']:02d}"
+        if f_start is not None:
+            _hi = f_end if f_end is not None else f_start
+            if _hi > f_start:
+                label = f"COMBINED E{f_start:02d}-E{_hi:02d}"
+            else:
+                label = f"E{f_start:02d}"
             if label.lower() not in name.lower():
-                name = f"{name} {label}"
+                name = f"{name} · {label}"
+        elif P.parse_combined_episodes(clean_name):
+            if "full" not in name.lower():
+                name = f"{name} · FULL SEASON"
         title_parts = [f"📁 {clean_name}", f"💾 {size}"]
         if codec:
             title_parts.append(f"🎥 {codec}")

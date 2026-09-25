@@ -87,6 +87,23 @@ async def lifespan(app: FastAPI):
 
         github_dispatch_task = asyncio.create_task(github_dispatch_loop())
 
+    # Series-index self-heal (reparse stored filenames with the current
+    # parser + retry unindexed queue). Background task: never blocks boot,
+    # quietly skips if the DB is still down, idempotent across restarts.
+    series_repair_task = None
+    if config.SERIES_REPAIR_ON_START:
+        async def _series_repair():
+            try:
+                await asyncio.sleep(6)  # let the DB pool warm + traffic flow first
+                from app.indexer import repair_series_index
+                res = await repair_series_index()
+                if not res.get("skipped"):
+                    LOGGER.info("Series self-heal done: %s", res)
+            except Exception as exc:  # must never affect the app
+                LOGGER.warning("Series self-heal skipped: %s", exc)
+
+        series_repair_task = asyncio.create_task(_series_repair())
+
     # Start PreDVD Leech Automator loop
     from app import predvd_automator
     predvd_automator.start()
@@ -126,6 +143,8 @@ async def lifespan(app: FastAPI):
         keepalive_task.cancel()
     if github_dispatch_task:
         github_dispatch_task.cancel()
+    if series_repair_task:
+        series_repair_task.cancel()
     from app import client as client_mod
 
     await client_mod.stop()
