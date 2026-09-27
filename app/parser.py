@@ -220,7 +220,8 @@ _TITLE_SE_STRIP_RES = (
 )
 _TITLE_NOISE_TOKENS = {
     "mkv", "mp4", "avi", "mov", "m4v", "flv", "webm", "wmv", "ts",
-    "www", "http", "https", "pack", "parts", "part",
+    "www", "http", "https", "pack", "parts", "part", "parts",
+    "complete", "completed", "combined", "batch", "unofficial", "collection",
 }
 _SERIES_TAIL_RE = re.compile(
     r"^(?:\d{3,4}p|\d{1,2}k|uhd|4k|8k|web[-\s]?dl|webdl|web[-\s]?rip|webrip|hdrip|hd[-\s]?rip|"
@@ -245,9 +246,18 @@ def _title_variants(title: str) -> list[str]:
     return out
 
 
+# Daily-show and packer noise that must never leak into a TMDb query:
+# "EP01 DAY 00", "19TH DAY", "2.5GB", "1GB" — leaving these in made Bigg Boss
+# files search "BIGG BOSS Tamil DAY 18" and match a different show.
+_DAY_NOISE_RE = re.compile(r"\b(?:DAY\b[\s._-]*\(?\s*\d{1,4}|\d{1,4}(?:ST|ND|RD|TH)?[\s._-]*DAY)\b\s*\)?", re.IGNORECASE)
+_SIZE_NOISE_RE = re.compile(r"\b\d+(?:[.,]\d+)?\s?(?:GB|MB)\b", re.IGNORECASE)
+
+
 def series_title_candidates(filename: str) -> list[str]:
     """Likely TMDb series-search titles for a filename, best-first."""
     name = clean_filename(str(filename or "").split("\n")[0])
+    name = _SIZE_NOISE_RE.sub(" ", name)
+    name = _DAY_NOISE_RE.sub(" ", name)
     name = _normalize_separators(name)
     name = _DATE_NOISE_RE.sub(" ", name)
     name = re.sub(r"\(?\s*(?:19|20)\d{2}\s*\)?", " ", name)   # (2024) / 2024
@@ -317,6 +327,60 @@ def languages_from_filename(filename: str) -> list[str]:
     return sorted(
         {label for token, label in _LANG_MAP.items() if re.search(rf"\b{token}\b", value)}
     )
+
+
+# ---------------------------------------------------------------------------
+# Audio profile (language chips for stream tiles — filename-derived, honest)
+# ---------------------------------------------------------------------------
+
+_AUDIO_LANG_LABELS = [
+    ("tamil", "TAMIL"), ("telugu", "TELUGU"), ("malayalam", "MALAYALAM"),
+    ("kannada", "KANNADA"), ("hindi", "HINDI"), ("english", "ENGLISH"),
+]
+_MULTI_AUDIO_RE = re.compile(
+    r"\b(?:dual[-\s]?audio|multi[-\s]?(?:audio|lang|language)|triple[-\s]?audio|\d+[-\s]?audio)\b",
+    re.IGNORECASE,
+)
+_TAMIL_DUB_RE = re.compile(r"\btamil[\s._-]*dubb(?:ed|ing)?\b|\btamil[\s._-]*dub\b", re.IGNORECASE)
+_EN_SUBS_RE = re.compile(r"\b(?:esubs?|english[\s._-]?subs?|eng[\s._-]?subs?)\b", re.IGNORECASE)
+
+_LANG_MARKS = {"TAMIL": "🟢", "TELUGU": "🟠", "MALAYALAM": "🔹",
+               "KANNADA": "🟣", "HINDI": "🔵", "ENGLISH": "⚪"}
+
+
+def audio_profile_from_filename(filename: str) -> dict:
+    """Language/audio facts proven by a filename (never guesses).
+
+    {"langs": [..], "multi": bool, "dub": bool, "subs_en": bool}
+    """
+    name = str(filename or "")
+    # "English Subs"/"ESub" proves SUBTITLES, not an audio track — mask those
+    # phrases before counting audio languages (subs_en still reads the raw name).
+    audio_text = re.sub(_EN_SUBS_RE, " ", name)
+    audio_text = re.sub(r"\b(?:tamil|telugu|hindi|malayalam|kannada)[\s._-]*(?:sub)?titles?\b", " ", audio_text, flags=re.IGNORECASE)
+    found = []
+    for word, label in _AUDIO_LANG_LABELS:
+        if re.search(rf"(?<![a-zA-Z]){word}(?![a-zA-Z])", audio_text, re.IGNORECASE) \
+                and label not in found:
+            found.append(label)
+    multi = len(found) >= 2 or bool(_MULTI_AUDIO_RE.search(name))
+    return {"langs": found, "multi": multi,
+            "dub": bool(_TAMIL_DUB_RE.search(name)),
+            "subs_en": bool(_EN_SUBS_RE.search(name))}
+
+
+def language_chip(prof: dict) -> str:
+    """One honest audio chip for the stream-tile name ('' when unknown)."""
+    if not prof:
+        return ""
+    if prof.get("dub") and len(prof.get("langs") or []) <= 1:
+        return "🟣 TAMIL DUB"
+    langs = prof.get("langs") or []
+    if prof.get("multi"):
+        return f"🟡 MULTI AUDIO ({len(langs)})" if len(langs) >= 2 else "🟡 MULTI AUDIO"
+    if len(langs) == 1:
+        return f"{_LANG_MARKS[langs[0]]} {langs[0]}"
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +598,23 @@ def extract_fallback_title_and_year(filename: str) -> tuple[Optional[str], Optio
 # ---------------------------------------------------------------------------
 # GlobalDB queries
 # ---------------------------------------------------------------------------
+
+
+def series_title_match(cand: str, res_title: str) -> bool:
+    """Is this TMDb show title a SAFE match for the search candidate?
+
+    Accepts only when every token of the show name appears in the candidate
+    and the candidate's leftovers are pure numbers (season markers). That
+    accepts "Bigg Boss Tamil" for "BIGG BOSS Tamil 10" but rejects the Hindi
+    "Bigg Boss" show and any fuzzy "Day Break"-style noise hit.
+    """
+    a = set(re.findall(r"[a-z0-9]+", str(cand or "").casefold()))
+    b = set(re.findall(r"[a-z0-9]+", str(res_title or "").casefold()))
+    if not a or not b or not (b <= a):
+        return False
+    _LANG_OK = {"hindi", "english", "tel", "telugu", "mal", "malayalam",
+                "kan", "kannada", "dubbed", "multi", "subbed", "hd", "sd"}
+    return all(tok.isdigit() or tok in _LANG_OK for tok in a - b)
 
 
 def build_global_file_query(meta_id: str, season=None, episode=None) -> dict:

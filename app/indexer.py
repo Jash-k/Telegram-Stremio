@@ -15,7 +15,14 @@ from pyrogram.errors import FloodWait
 
 from . import config, db
 from .logger import LOGGER
-from .metadata import format_tmdb_image, tmdb_details, tmdb_search, year_number
+from .metadata import (
+    format_tmdb_image,
+    media_fields_from_details,
+    tmdb_details,
+    tmdb_search,
+    tmdb_search_multi,
+    year_number,
+)
 from .parser import (
     analyze_episodes,
     clean_filename,
@@ -28,6 +35,7 @@ from .parser import (
     languages_from_filename,
     parse_combined_episodes,
     series_title_candidates,
+    series_title_match,
     source_from_filename,
 )
 
@@ -47,7 +55,24 @@ _status = {
     "current_chat": None,
     "current_filter": None,
     "last_error": None,
+    # v17 session counters (in-memory, zero DB cost) for the Ops Board.
+    "indexed_total": 0,
+    "last_indexed_ts": None,
 }
+
+
+async def last_sweep() -> dict:
+    """Most recent finished index run, persisted by _release in `state`."""
+    try:
+        if not db.is_connected():
+            return {}
+        doc = await db.col("state").find_one(
+            {"_id": _JOB_ID},
+            {"status": 1, "processed": 1, "finished_at": 1, "last_error": 1},
+        )
+        return doc or {}
+    except Exception:
+        return {}
 
 
 def readable_size(size_in_bytes) -> str:
@@ -463,8 +488,19 @@ async def index_filename(chat_id: int, message_id: int, filename: str, size: int
 
         res = None
         if media_type == "series":
+            # Scan the result list and accept only a show whose name is fully
+            # contained in our clean candidate — TMDb's top hit for a noisy
+            # query is often the Hindi "Bigg Boss" (or an unrelated fuzzy
+            # match), which is exactly how Tamil episodes ended up mixed.
             for cand in series_cands:
-                res = await tmdb_search(cand, "tv")
+                try:
+                    results = await tmdb_search_multi(cand, "tv", limit=8)
+                except Exception:
+                    results = []
+                for r in results:
+                    if series_title_match(cand, r.get("name") or r.get("title") or ""):
+                        res = r
+                        break
                 if res:
                     break
         if not res and title:
@@ -503,6 +539,10 @@ async def index_filename(chat_id: int, message_id: int, filename: str, size: int
             "rating": details.get("vote_average", 0.0),
             "updated_at": time.time(),
         }
+        # v17: stills / season posters / trailer key ride along in the SAME
+        # TMDb call — the Stremio meta response gains thumbnails + trailers
+        # without a single extra API hit at stream time.
+        update_data.update(media_fields_from_details(details, media_type))
 
         languages = languages_from_filename(filename)
         if details.get("original_language") == "ta" and "Tamil" not in languages:
@@ -543,6 +583,16 @@ async def index_filename(chat_id: int, message_id: int, filename: str, size: int
         if old_meta_id and old_meta_id != doc_id:
             if not await db.col("files").find_one({"meta_id": old_meta_id}, {"_id": 1}):
                 await db.col("meta").delete_one({"_id": old_meta_id})
+
+        # v17: Ops Board counters + watchlist notification. Both strictly
+        # best-effort — nothing here may turn a successful index into a failure.
+        _status["indexed_total"] = _status.get("indexed_total", 0) + 1
+        _status["last_indexed_ts"] = time.time()
+        try:
+            from .watchlist import check_landed
+            await check_landed(update_data.get("title") or "", filename, file_data["size_str"])
+        except Exception as exc:
+            LOGGER.debug("[INDEXER] watchlist check skipped: %s", exc)
         return doc_id
     except Exception as exc:
         LOGGER.error(f"[INDEXER] Exception processing message {message_id} in {chat_id}: {exc}")
@@ -727,6 +777,13 @@ async def _run(force_historic: bool, target_chat_id=None) -> None:
         LOGGER.error(f"[INDEXER] fatal: {exc}")
     finally:
         await _release(final_status, total["processed"])
+        try:
+            from .opslog import log_op
+            await log_op("sweep", final_status,
+                         processed=total["processed"],
+                         error=str(_status.get("last_error") or "")[:120])
+        except Exception:
+            pass
         _running = False
         _stop_requested = False
         _task = None
@@ -796,10 +853,12 @@ def _norm_title(t: str) -> str:
 
 
 async def repair_series_index(max_updates: int = 6000, max_relinks: int = 300,
-                              unindexed_retry_limit: int = 300) -> dict:
+                              unindexed_retry_limit: int = 300,
+                              backfill_meta: bool = False,
+                              backfill_limit: int = 100) -> dict:
     """Re-derive season/episode data from stored filenames using the current parser.
 
-    Three phases, all idempotent (only documents that actually change are
+    Four phases, all idempotent (only documents that actually change are
     touched, so the next boot is a fast no-op):
       1. Backfill/correct ``season``/``episode_start``/``episode_end`` on files
          saved with missing or broken fields by the old parser — this fixes
@@ -807,11 +866,14 @@ async def repair_series_index(max_updates: int = 6000, max_relinks: int = 300,
       2. Full re-index of series files linked to a MOVIE meta or to a show
          with a different title (the "Bigg Boss Tamil" → Hindi "Bigg Boss" mixup).
       3. Retry of the unindexed queue with the new parser.
+      4. (v17, opt-in) ``backfill_meta``: pull poster-still / season-poster /
+         trailer fields onto titles indexed before those fields existed —
+         capped at ``backfill_limit`` titles per run, one TMDb call each.
 
     Never raises: a dead DB simply ends the pass.
     """
     stats = {"scanned": 0, "fields_fixed": 0, "relinked": 0,
-             "unindexed_retried": 0, "unindexed_fixed": 0}
+             "unindexed_retried": 0, "unindexed_fixed": 0, "media_backfilled": 0}
     if not db.is_connected():
         return {**stats, "skipped": "db unavailable"}
     try:
@@ -864,6 +926,9 @@ async def repair_series_index(max_updates: int = 6000, max_relinks: int = 300,
                         if await index_filename(int(fdoc["chat_id"]), int(fdoc["message_id"]),
                                                 filename, int(fdoc.get("size") or 0)):
                             stats["relinked"] += 1
+                            # The meta may now be corrected — drop the cached copy
+                            # so sibling files of the same show don't each relink.
+                            meta_cache.pop(meta_id, None)
                             continue  # re-index wrote fresh fields already
                     except Exception as exc:
                         LOGGER.debug("[REPAIR] relink failed for %s: %s", fdoc.get("_id"), exc)
@@ -896,9 +961,106 @@ async def repair_series_index(max_updates: int = 6000, max_relinks: int = 300,
                 LOGGER.debug("[REPAIR] unindexed retry failed for %s: %s", u.get("_id"), exc)
             await asyncio.sleep(0.1)  # TMDb rate-limit courtesy
 
+        # ---- Phase 4 (v17): media backfill (stills / season posters / trailer).
+        if backfill_meta:
+            touched = 0
+            limit = max(1, min(int(backfill_limit or 100), 250))
+            try:
+                cursor = db.col("meta").find(
+                    {"trailer_yt": {"$exists": False}},
+                    {"tmdb_id": 1, "media_type": 1},
+                ).limit(limit)
+                async for mdoc in cursor:
+                    try:
+                        tmdb_id = mdoc.get("tmdb_id")
+                        if not tmdb_id:
+                            continue
+                        mt = mdoc.get("media_type") or "movie"
+                        details = await tmdb_details(mt, tmdb_id)
+                        if not details:
+                            continue
+                        fields = media_fields_from_details(details, mt)
+                        fields["trailer_yt"] = fields.get("trailer_yt") or ""
+                        await db.col("meta").update_one(
+                            {"_id": mdoc["_id"]}, {"$set": fields})
+                        touched += 1
+                        if touched % 25 == 0:
+                            await asyncio.sleep(0.5)  # let interactive traffic win
+                    except Exception as exc:
+                        LOGGER.debug("[REPAIR] media backfill skip %s: %s",
+                                     mdoc.get("_id"), exc)
+                    await asyncio.sleep(0.15)  # TMDb courtesy
+                if touched:
+                    stats["media_backfilled"] = touched
+                    # Stremio meta responses are cached — refresh so new
+                    # thumbnails/trailers appear immediately, not at TTL.
+                    try:
+                        from .cache import meta_cache as _stremio_meta_cache
+                        _stremio_meta_cache.clear()
+                    except Exception:
+                        pass
+            except Exception as exc:
+                LOGGER.debug("[REPAIR] media backfill aborted: %s", exc)
+
         if any(v for k, v in stats.items() if k != "scanned"):
             LOGGER.info("[REPAIR] series index self-heal: %s", stats)
         return stats
     except Exception as exc:  # noqa: BLE001 — self-heal must never break boot
         LOGGER.warning("[REPAIR] series index self-heal aborted: %s", exc)
         return {**stats, "error": str(exc)[:200]}
+
+
+# ---------------------------------------------------------------------------
+# v17: single entry point for the Self-Heal pass (panel button + /heal share it)
+# ---------------------------------------------------------------------------
+
+_repair_busy = False
+
+
+def schedule_repair(backfill: bool = False) -> dict:
+    """Start a self-heal run in the background. Never blocks the caller.
+
+    Returns {ok, message} on accept, {ok: False, detail} when one is already
+    running. On completion the result lands in ops_log so the panel (and
+    /stats) can show what it actually did even if the tab was closed.
+    """
+    global _repair_busy
+    if _repair_busy:
+        return {"ok": False, "detail": "A repair pass is already running — check back in a minute."}
+    _repair_busy = True
+
+    async def _run():
+        try:
+            res = await repair_series_index(
+                max_updates=30000, max_relinks=3000, unindexed_retry_limit=3000,
+                backfill_meta=bool(backfill))
+            LOGGER.info("[REPAIR] background pass finished: %s", res)
+            try:
+                from .opslog import log_op
+                bad = res.get("error") or res.get("skipped")
+                await log_op(
+                    "selfheal", "failed" if bad else "ok",
+                    scanned=int(res.get("scanned") or 0),
+                    fixed=int(res.get("fields_fixed") or 0),
+                    relinked=int(res.get("relinked") or 0),
+                    retried=int(res.get("unindexed_retried") or 0),
+                    recovered=int(res.get("unindexed_fixed") or 0),
+                    backfilled=int(res.get("media_backfilled") or 0),
+                    detail=str(bad or ""),
+                )
+            except Exception:
+                pass
+        except Exception as exc:  # never surface a crash to the panel
+            LOGGER.warning("[REPAIR] background pass failed: %s", exc)
+        finally:
+            _repair_busy = False
+
+    try:
+        asyncio.create_task(_run())
+    except RuntimeError:  # no running loop (tests) — release the guard
+        _repair_busy = False
+        return {"ok": False, "detail": "Cannot schedule right now."}
+    return {"ok": True,
+            "message": "Self-heal started in background (fields, show relinks, unindexed retries"
+                       + (", poster/trailer backfill ≤100 titles" if backfill else "")
+                       + "). Refresh the queue in a minute."}

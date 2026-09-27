@@ -1,6 +1,7 @@
 """GlobalDB management API — mirrors the original project's
 `/api/admin/global/*` surface so the global_manage.html panel works unchanged.
 """
+import asyncio
 import re
 import time
 
@@ -102,9 +103,14 @@ async def global_stats(_: bool = Depends(require_auth)):
 
 
 @router.get("/files/catalog/{catalog_id}")
-async def get_catalog_files(catalog_id: str, page: int = 1, _: bool = Depends(require_auth)):
+async def get_catalog_files(catalog_id: str, page: int = 1, q: str = "",
+                            _: bool = Depends(require_auth)):
     skip = (page - 1) * PAGE_SIZE
     query = {"catalog": catalog_id}
+    # v17: title find-box on the catalogs view (same safe regex pattern the
+    # unindexed queue uses).
+    if q and q.strip():
+        query["title"] = {"$regex": re.escape(q.strip()), "$options": "i"}
     total = await db.col("meta").count_documents(query)
     items = await db.col("meta").find(query).sort([("updated_at", -1), ("_id", -1)]).skip(skip).limit(PAGE_SIZE).to_list(None)
     # ONE aggregation for all file counts instead of one count_documents per title.
@@ -189,7 +195,27 @@ async def index_stop(_: bool = Depends(require_auth)):
 
 @router.get("/index/status")
 async def index_status(_: bool = Depends(require_auth)):
-    return status()
+    out = dict(status())
+    # v17 Ops Board: last finished sweep (already persisted by _release —
+    # this is one single-document read, not new bookkeeping).
+    try:
+        from app.indexer import last_sweep
+
+        last = await last_sweep()
+        if last:
+            last.pop("_id", None)
+            out["last_sweep"] = last
+    except Exception:
+        pass
+    return out
+
+
+@router.get("/ops-log")
+async def ops_log(_: bool = Depends(require_auth)):
+    """Last finished admin runs (cleanup / self-heal / sweeps)."""
+    from app.opslog import recent_ops
+
+    return {"ok": True, "entries": await recent_ops(10)}
 
 
 @router.post("/index/message")
@@ -228,6 +254,33 @@ async def index_single_message(payload: dict, _: bool = Depends(require_auth)):
 # ---------------------------------------------------------------------------
 # Unindexed queue
 # ---------------------------------------------------------------------------
+
+@router.post("/indexer/repair", dependencies=[Depends(require_auth)])
+async def trigger_series_repair(request: Request):
+    """Run the series self-heal pass on demand (same work as the boot task).
+
+    Reparses stored filenames to fix season/episode ranges, relinks files that
+    matched the wrong show (e.g. Bigg Boss Tamil vs Hindi Bigg Boss), and
+    retries the whole unindexed queue with the current parser. Idempotent —
+    safe to click repeatedly; only changed rows are written.
+
+    v17: `{"backfill": true}` (the panel checkbox, default ON) also refreshes
+    poster-still / season-poster / trailer data on up to 100 older titles.
+    """
+    from app.indexer import schedule_repair
+
+    backfill = True
+    try:
+        body = await request.json()
+        if isinstance(body, dict) and "backfill" in body:
+            backfill = bool(body.get("backfill"))
+    except Exception:
+        pass
+    res = schedule_repair(backfill=backfill)
+    if not res.get("ok"):
+        return {"ok": False, "detail": res.get("detail")}
+    return {"ok": True, "message": res["message"]}
+
 
 @router.get("/unindexed")
 async def get_unindexed(page: int = 1, search: str = "", _: bool = Depends(require_auth)):
@@ -772,7 +825,15 @@ async def cleanup(_: bool = Depends(require_auth)):
     import asyncio
 
     async def _go():
-        await run_cleanup_all()
+        # v17: record the outcome — the deleted-file count used to vanish
+        # after the panel tab was closed mid-run.
+        try:
+            removed = await run_cleanup_all()
+            from app.opslog import log_op
+            await log_op("cleanup", "completed", removed=int(removed or 0))
+        except Exception as exc:
+            from app.opslog import log_op
+            await log_op("cleanup", "failed", error=f"{type(exc).__name__}")
 
     asyncio.create_task(_go())
     return {"status": "success", "message": "Cleanup started in the background!"}
@@ -867,6 +928,14 @@ async def stream_activity(_: bool = Depends(require_auth)):
     snap = telemetry.snapshot()
     active = snap.get("active_streams", [])
     total_mbps = sum(a.get("instant_mbps", 0) or 0 for a in active)
+    # v17 Ops Board rides this existing 10-s poll: scraper dispatch countdown,
+    # session drop flag, indexer counters — all in-memory, zero DB.
+    try:
+        from app.keepalive import dispatch_state
+        dsp = dispatch_state()
+    except Exception:
+        dsp = {"enabled": False, "last_status": None, "next_due": None,
+               "interval_min": 0, "total_fired": 0, "last_ts": None}
     return {
         "active_count": len(active),
         "total_mbps": round(total_mbps, 2),
@@ -874,6 +943,16 @@ async def stream_activity(_: bool = Depends(require_auth)):
         "user_online": client_mod.is_connected(),
         "bots_online": bots_connected,
         "indexer_running": status().get("running", False),
+        "indexer": {
+            "running": status().get("running", False),
+            "processed": status().get("processed", 0),
+            "indexed_total": status().get("indexed_total", 0),
+            "last_indexed_ts": status().get("last_indexed_ts"),
+            "current_chat": status().get("current_chat"),
+            "current_filter": status().get("current_filter"),
+            "last_error": status().get("last_error"),
+        },
+        "dispatch": dsp,
         "active": active,
         "counters": snap.get("counters", {}),
     }

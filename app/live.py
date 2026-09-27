@@ -109,4 +109,7 @@ def install(client) -> None:
     client.add_handler(handlers.EditedMessageHandler(on_edited, update_filter))
     client.add_handler(handlers.DeletedMessagesHandler(on_deleted))
     _installed = True
+    # v17: self-chat slash commands ride the same client + same install path.
+    from .userbot_cmds import install as install_cmds
+    install_cmds(client)
     LOGGER.info("[LIVE] new/edit/delete live watcher handlers installed successfully")

@@ -263,6 +263,14 @@ async def meta(token: str, media_type: str, id: str):
         "genres": g_meta.get("genres", []),
     }
 
+    # v17: trailer + still imagery stored on the meta doc at index time —
+    # zero extra TMDb calls at request time, and total absence is fine.
+    _yt = g_meta.get("trailer_yt")
+    if _yt:
+        meta_obj["trailerStreams"] = [{"source": _yt, "title": "▶ Official Trailer"}]
+    if not meta_obj.get("background") and g_meta.get("still_path"):
+        meta_obj["background"] = g_meta["still_path"]
+
     if global_type == "series":
         from app.metadata import tmdb_details
 
@@ -301,11 +309,18 @@ async def meta(token: str, media_type: str, id: str):
             except Exception:
                 pass
 
-        meta_obj["videos"] = [
-            {"id": f"{id}:{season}:{episode}", "title": f"Episode {episode}",
-             "season": season, "episode": episode}
-            for season, episode in sorted(episode_keys)
-        ]
+        # Episode rows get season posters (or the title still) as thumbnails.
+        _sp = g_meta.get("season_posters") or {}
+        _fallback_thumb = g_meta.get("still_path") or ""
+        vids = []
+        for season, episode in sorted(episode_keys):
+            v = {"id": f"{id}:{season}:{episode}", "title": f"Episode {episode}",
+                 "season": season, "episode": episode}
+            thumb = _sp.get(str(season)) or _sp.get(season) or _fallback_thumb
+            if thumb:
+                v["thumbnail"] = thumb
+            vids.append(v)
+        meta_obj["videos"] = vids
     result = {"meta": meta_obj}
     meta_cache.set(cache_key, result, META_TTL)
     return result
@@ -377,18 +392,30 @@ async def stream(token: str, media_type: str, id: str):
             _hi = f_end if f_end is not None else f_start
             if not (f_start <= episode <= _hi):
                 continue  # strict: this file does not contain the requested episode
-        name = f"🌐 GLOBAL {quality}"
+        # Info-chip name (replaces "🌐 GLOBAL"): one audio truth + quality +
+        # codec + one structure truth. The filename itself is NEVER touched —
+        # it stays verbatim in the 📁 title line below.
+        _prof = P.audio_profile_from_filename(clean_name)
+        _chips: list[str] = []
+        _lang_chip = P.language_chip(_prof)
+        if _lang_chip:
+            _chips.append(_lang_chip)
+        _chips.append(str(quality or "HD"))
+        if codec:
+            _chips.append(str(codec))
+        _fseason = P.first_int(fdoc.get("season"))
         if f_start is not None:
             _hi = f_end if f_end is not None else f_start
             if _hi > f_start:
-                label = f"COMBINED E{f_start:02d}-E{_hi:02d}"
-            else:
-                label = f"E{f_start:02d}"
-            if label.lower() not in name.lower():
-                name = f"{name} · {label}"
-        elif P.parse_combined_episodes(clean_name):
-            if "full" not in name.lower():
-                name = f"{name} · FULL SEASON"
+                _chips.append(f"🧩 COMBINED E{f_start:02d}-E{_hi:02d}")
+            elif season is not None or _fseason is not None:
+                _chips.append(f"E{f_start:02d}")
+        elif P.parse_combined_episodes(clean_name) and (season is not None or _fseason is not None):
+            _sn = _fseason if _fseason is not None else season
+            _chips.append(f"📦 FULL SEASON S{_sn:02d}" if _sn is not None else "📦 FULL SEASON")
+        if _prof.get("subs_en"):
+            _chips.append("💬 SUBS(EN)")
+        name = " · ".join(_chips)
         title_parts = [f"📁 {clean_name}", f"💾 {size}"]
         if codec:
             title_parts.append(f"🎥 {codec}")
@@ -401,6 +428,8 @@ async def stream(token: str, media_type: str, id: str):
             "title": title,
             "url": f"{config.BASE_URL}/dl/{token}/{sid}/{quote(clean_name)}",
             "size_bytes": _parse_size(size),
+            # v17: spec field (bytes) — Stremio shows file size / aids players.
+            "videoSize": int(fdoc.get("size") or 0) or None,
             "_res": _resolution_priority(name),
             "_lang": _language_priority(clean_name),
         })
@@ -409,6 +438,8 @@ async def stream(token: str, media_type: str, id: str):
     for s in streams:
         s.pop("_res", None)
         s.pop("_lang", None)
+        if not s.get("videoSize"):
+            s.pop("videoSize", None)  # only ship it when the size is known
 
     # de-duplicate identical names with a counter
     counts: dict = {}

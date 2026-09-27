@@ -103,6 +103,12 @@ FLOOD_COOLDOWN_SECONDS = _int("FLOOD_COOLDOWN_SECONDS", 12)
 # Self-ping interval (minutes) to defeat Koyeb scale-to-zero.
 KEEPALIVE_MINUTES = _int("KEEPALIVE_MINUTES", 15)
 
+# --- v17 safety pulse: DM the self-chat when the unindexed backlog grows ---
+# past a threshold (max one DM/day). Session drop/recover notices are always
+# on; this knob only controls the backlog nudge.
+SAFETY_DM_ENABLED = os.getenv("SAFETY_DM_ENABLED", "true").lower() in ("true", "1", "yes")
+SAFETY_BACKLOG_THRESHOLD = _int("SAFETY_BACKLOG_THRESHOLD", 25)
+
 # --- External 1TamilMV scraper trigger (GitHub Actions workflow_dispatch) ----
 # Your mv_scrapper repo runs on GitHub Actions. Instead of relying on GitHub's
 # flaky scheduled runs, this app pokes the workflow's dispatch API on a timer so

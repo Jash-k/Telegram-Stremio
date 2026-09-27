@@ -26,6 +26,15 @@ async def _session_watchdog():
     while True:
         await asyncio.sleep(60)
 
+        # v17 safety pulse (self-throttled inside; DMs on session recovery
+        # and backlog growth). Must never affect the watchdog loop itself.
+        try:
+            from app.keepalive import safety_tick
+
+            await safety_tick()
+        except Exception:
+            pass
+
         # User session
         if config.SESSION_STRING and not client_mod.is_connected():
             try:

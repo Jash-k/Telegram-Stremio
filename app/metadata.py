@@ -85,7 +85,55 @@ async def tmdb_search_multi(title: str, media_type: str, year=None, limit: int =
 
 async def tmdb_details(media_type: str, tmdb_id) -> Optional[dict]:
     path = f"/{'movie' if media_type == 'movie' else 'tv'}/{tmdb_id}"
-    return await _get(path, {"append_to_response": "external_ids", "language": "en-US"})
+    # v17: fetch the trailer list with the details themselves — one call now
+    # buys Stremio trailerStreams forever (no extra API call at stream time).
+    return await _get(path, {"append_to_response": "external_ids,videos", "language": "en-US"})
+
+
+def pick_trailer_key(details: dict) -> str:
+    """Best YouTube key from a TMDb details payload (official Trailer first)."""
+    results = ((details or {}).get("videos") or {}).get("results") or []
+    best_score, best_key = None, ""
+    for v in results:
+        if v.get("site") != "YouTube" or not v.get("key"):
+            continue
+        vtype = v.get("type")
+        if vtype not in ("Trailer", "Teaser", "Clip"):
+            continue
+        try:
+            pop = float(v.get("popularity") or 0)
+        except (TypeError, ValueError):
+            pop = 0.0
+        score = (1 if v.get("official") else 0,
+                 1 if vtype == "Trailer" else 0,
+                 pop)
+        if best_score is None or score > best_score:
+            best_score, best_key = score, str(v["key"])
+    return best_key
+
+
+def media_fields_from_details(details: dict, media_type: str) -> dict:
+    """Index-time extras stored on the meta doc (v17): episode stills,
+    season posters, trailer key. All optional — absence must never break a
+    Stremio response."""
+    out: dict = {}
+    try:
+        still = details.get("still_path") or details.get("backdrop_path")
+        if still:
+            out["still_path"] = format_tmdb_image(still, "w780")
+        out["trailer_yt"] = pick_trailer_key(details)
+        # meta docs store "series"; TMDb calls use "tv" — accept both.
+        if media_type in ("tv", "series"):
+            posters = {}
+            for s in details.get("seasons") or []:
+                sn = s.get("season_number")
+                if sn is not None and s.get("poster_path"):
+                    posters[str(int(sn))] = format_tmdb_image(s.get("poster_path"))
+            if posters:
+                out["season_posters"] = posters
+    except Exception:
+        pass
+    return out
 
 
 async def tmdb_find_by_imdb(imdb_id: str) -> Optional[dict]:

@@ -85,11 +85,92 @@
 </div>
 
 <div style="display:flex; gap:10px; margin-bottom:1.5rem; overflow-x:auto;">
-    <button id="tab-dash" class="btn btn-primary" style="white-space:nowrap;" onclick="switchView('dashboard')"><i class="fa-solid fa-layer-group"></i> Catalogs</button>
+    <button id="tab-ops" class="btn btn-primary" style="white-space:nowrap;" onclick="switchView('ops')"><i class="fa-solid fa-gauge-high"></i> Ops Board</button>
+    <button id="tab-dash" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('dashboard')"><i class="fa-solid fa-layer-group"></i> Catalogs</button>
     <button id="tab-channels" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('channels')"><i class="fa-solid fa-server"></i> Channels</button>
     <button id="tab-unidx" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('unindexed')"><i class="fa-solid fa-triangle-exclamation"></i> Unindexed Queue <span id="unindexed-badge" class="badge" style="display:none; background:#ef4444; color:white; margin-left:5px;">0</span></button>
     <button id="tab-predvd" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('predvd')"><i class="fa-solid fa-fire-flame-curved" style="color:#f43f5e;"></i> PreDVD Auto-Leech</button>
     <button id="tab-digital" class="btn btn-ghost" style="white-space:nowrap;" onclick="switchView('digital')"><i class="fa-solid fa-compact-disc" style="color:#22c55e;"></i> Digital Releases</button>
+</div>
+
+<!-- ================= v17: OPS BOARD — readout of everything, one screen.
+     Cards mirror existing endpoints; action buttons call the SAME functions
+     the existing tabs use (one code path per action). Nothing else was moved. -->
+<style>
+    .ops-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(270px,1fr)); gap:14px; margin-bottom:2rem; }
+    .ops-card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:1rem 1.1rem; }
+    .ops-card h4 { font-size:0.72rem; text-transform:uppercase; letter-spacing:0.6px; color:var(--text-sec); margin:0 0 10px; display:flex; align-items:center; gap:6px; font-weight:700; }
+    .ops-big { font-size:1.35rem; font-weight:800; line-height:1.25; }
+    .ops-sub { font-size:0.75rem; color:var(--text-sec); margin-top:6px; word-break:break-word; }
+    .ops-ok { color:#22c55e; } .ops-warn { color:#eab308; } .ops-bad { color:#ef4444; }
+    .ops-actions { margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; }
+    .ops-actions .btn { padding:0.35rem 0.7rem; font-size:0.78rem; }
+    .ops-led { display:inline-block; width:9px; height:9px; border-radius:50%; background:#64748b; }
+    .ops-backlog-clean { border-color:#22c55e88 !important; box-shadow:0 0 14px #22c55e22; }
+    .ops-act-row { display:flex; gap:10px; align-items:baseline; font-size:0.78rem; padding:4px 0; border-bottom:1px dashed var(--border); flex-wrap:wrap; }
+    .ops-act-row:last-child { border-bottom:none; }
+</style>
+<div id="view-ops" style="display:none;">
+    <div class="ops-grid">
+        <div class="ops-card">
+            <h4><span class="ops-led" id="ops-led-system"></span> System</h4>
+            <div class="ops-big" id="ops-overall">…</div>
+            <div class="ops-sub" id="ops-sys-sub">loading health snapshot…</div>
+            <div class="ops-actions">
+                <button class="btn btn-ghost" onclick="switchView('health')"><i class="fa-solid fa-stethoscope"></i> Full health details</button>
+                <button class="btn btn-ghost" onclick="loadOps()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+            </div>
+        </div>
+        <div class="ops-card">
+            <h4><span class="ops-led" id="ops-led-db"></span> MongoDB (Atlas)</h4>
+            <div class="ops-big" id="ops-db-state">…</div>
+            <div class="ops-sub" id="ops-db-sub"></div>
+        </div>
+        <div class="ops-card">
+            <h4><span class="ops-led" id="ops-led-idx"></span> Indexer</h4>
+            <div class="ops-big" id="ops-idx-state">…</div>
+            <div class="ops-sub" id="ops-idx-sub"></div>
+            <div class="ops-actions">
+                <button class="btn btn-primary" id="ops-btn-sync" onclick="toggleIndexer()">▶ Sync All</button>
+                <button class="btn btn-ghost" style="color:#f59e0b;border-color:#f59e0b55;" onclick="runSeriesRepair()">🪄 Self-Heal</button>
+            </div>
+        </div>
+        <div class="ops-card">
+            <h4><span class="ops-led" id="ops-led-disp"></span> Scraper Feed</h4>
+            <div style="display:flex;align-items:center;gap:12px;">
+                <svg width="46" height="46" viewBox="0 0 40 40" style="transform:rotate(-90deg);flex:none;">
+                    <circle cx="20" cy="20" r="16" fill="none" stroke="var(--border)" stroke-width="4"/>
+                    <circle id="ops-ring-fg" cx="20" cy="20" r="16" fill="none" stroke="#22c55e" stroke-width="4" stroke-linecap="round" stroke-dasharray="100.5" stroke-dashoffset="100.5"/>
+                </svg>
+                <div>
+                    <div class="ops-big" id="ops-disp-label" style="font-size:1.05rem;">…</div>
+                    <div class="ops-sub" id="ops-disp-sub" style="margin-top:2px;"></div>
+                </div>
+            </div>
+            <div class="ops-actions"><button class="btn btn-ghost" onclick="syncPreDVDFeed()">⚡ Check feed now</button></div>
+        </div>
+        <div class="ops-card">
+            <h4>🕸 Leech Automator</h4>
+            <div class="ops-big" id="ops-leech-state" style="font-size:1.05rem;">…</div>
+            <div class="ops-sub" id="ops-leech-sub"></div>
+            <div class="ops-actions"><button class="btn btn-ghost" onclick="switchView('predvd')">Manage →</button></div>
+        </div>
+        <div class="ops-card" id="ops-card-backlog">
+            <h4>📥 Unindexed Backlog</h4>
+            <div class="ops-big" id="ops-backlog-n" style="font-size:2rem;">…</div>
+            <div class="ops-sub" id="ops-backlog-sub"></div>
+            <div class="ops-actions"><button class="btn btn-ghost" onclick="switchView('unindexed')">Open queue →</button></div>
+        </div>
+        <div class="ops-card" style="grid-column:1/-1;">
+            <h4>🧾 Recent Actions <span style="text-transform:none;letter-spacing:0;font-weight:normal;">— finished runs land here even if you closed the tab</span></h4>
+            <div id="ops-recent" style="max-height:190px;overflow-y:auto;"><div class="ops-sub">loading…</div></div>
+        </div>
+        <div class="ops-card" style="grid-column:1/-1;">
+            <h4>📡 Stream Board</h4>
+            <div class="ops-big" id="ops-stream-sum" style="font-size:1rem;">0 active · 0.0 Mbps</div>
+            <div class="ops-sub" id="ops-stream-rows"></div>
+        </div>
+    </div>
 </div>
 
 <!-- Digital Releases View (manual leech of official WEB-DL / HD prints) -->
@@ -297,6 +378,7 @@
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
         <h3 style="font-size:1.1rem; font-weight:600;">Service Health</h3>
         <button onclick="loadHealth()" class="btn btn-ghost"><i class="fa-solid fa-rotate-right"></i> Refresh</button>
+        <button onclick="switchView('ops')" class="btn btn-ghost"><i class="fa-solid fa-arrow-left"></i> Back to Ops</button>
     </div>
 
     <div class="global-stats" id="health-overview"></div>
@@ -365,9 +447,13 @@
 
 <!-- Catalog Drilldown View -->
 <div id="view-catalog" style="display:none;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; flex-wrap:wrap; gap:8px;">
         <h3 style="font-size:1.1rem; font-weight:600;" id="cat-title">Catalog View</h3>
-        <button onclick="switchView('dashboard')" class="btn btn-ghost"><i class="fa-solid fa-arrow-left"></i> Back</button>
+        <div style="display:flex; gap:8px; align-items:center;">
+            <input type="text" id="cat-search" class="s-input" placeholder="🔎 find title…" style="padding:0.4rem 0.8rem; font-size:0.9rem; max-width:200px;" onkeydown="if(event.key==='Enter'){currentPage=1; loadCatalogPage();}">
+            <button class="btn btn-ghost" onclick="currentPage=1; loadCatalogPage()"><i class="fa-solid fa-search"></i></button>
+            <button onclick="switchView('dashboard')" class="btn btn-ghost"><i class="fa-solid fa-arrow-left"></i> Back</button>
+        </div>
     </div>
     <div class="table-wrap">
         <table>
@@ -497,6 +583,8 @@
             <input type="text" id="unidx-search" class="s-input" placeholder="Search filenames..." style="padding: 0.4rem 0.8rem; font-size: 0.9rem;" onkeydown="if(event.key==='Enter'){unidxPage=1; loadUnindexedPage();}">
             <button class="btn btn-ghost" onclick="unidxPage=1; loadUnindexedPage()" style="padding: 0.4rem 0.8rem; font-size: 0.9rem;"><i class="fa-solid fa-search"></i></button>
             <button class="btn btn-primary" onclick="showBatchMapModal()" style="padding: 0.4rem 0.8rem; font-size: 0.9rem;"><i class="fa-solid fa-link"></i> Map Selected</button>
+            <button class="btn btn-ghost" id="btn-series-repair" onclick="runSeriesRepair()" style="padding: 0.4rem 0.8rem; font-size: 0.9rem; color:#f59e0b; border-color:#f59e0b55;" title="Re-parse stored filenames with the latest parser: fixes episode ranges, relinks wrong shows (e.g. Bigg Boss mixups), and retries every unindexed file. Safe to run repeatedly."><i class="fa-solid fa-wand-magic-sparkles"></i> Self-Heal</button>
+            <label style="display:flex;align-items:center;gap:5px;font-size:0.75rem;color:var(--text-sec);cursor:pointer;white-space:nowrap;" title="Also pull still images, season posters and trailer links for up to 100 older titles this run (one TMDb call each)."><input type="checkbox" id="repair-backfill" checked> backfill posters/trailers</label>
             <button class="btn btn-danger" onclick="purgeUnindexed()" style="padding: 0.4rem 0.8rem; font-size: 0.9rem;"><i class="fa-solid fa-trash"></i> Purge All</button>
         </div>
     </div>
@@ -655,6 +743,7 @@ let currentActiveCallback = null;
 
 function switchView(viewName) {
     document.getElementById('view-dashboard').style.display = 'none';
+    document.getElementById('view-ops').style.display = 'none';
     document.getElementById('view-channels').style.display = 'none';
     document.getElementById('view-channel-files').style.display = 'none';
     document.getElementById('view-unindexed').style.display = 'none';
@@ -664,13 +753,19 @@ function switchView(viewName) {
     document.getElementById('view-predvd').style.display = 'none';
     document.getElementById('view-digital').style.display = 'none';
 
+    document.getElementById('tab-ops').classList.replace('btn-primary', 'btn-ghost');
     document.getElementById('tab-dash').classList.replace('btn-primary', 'btn-ghost');
     document.getElementById('tab-channels').classList.replace('btn-primary', 'btn-ghost');
     document.getElementById('tab-unidx').classList.replace('btn-primary', 'btn-ghost');
     document.getElementById('tab-predvd').classList.replace('btn-primary', 'btn-ghost');
     document.getElementById('tab-digital').classList.replace('btn-primary', 'btn-ghost');
     
-    if (viewName === 'dashboard') {
+    if (viewName === 'ops') {
+        document.getElementById(`view-ops`).style.display = 'block';
+        document.getElementById('tab-ops').classList.replace('btn-ghost', 'btn-primary');
+        loadOps();
+        currentActiveCallback = loadOps;
+    } else if (viewName === 'dashboard') {
         document.getElementById(`view-dashboard`).style.display = 'block';
         document.getElementById('tab-dash').classList.replace('btn-ghost', 'btn-primary');
         loadData();
@@ -709,6 +804,7 @@ async function checkIndexer() {
     try {
         const res = await fetch('/api/admin/global/index/status');
         const data = await res.json();
+        updateOpsIndexer(data);   // v17 Ops Board rides this existing poll
         const btn = document.getElementById('btn-index');
         const wipeBtn = document.getElementById('btn-wipe-rescan');
         const lbl = document.getElementById('lbl-index-status');
@@ -849,6 +945,7 @@ async function loadUnindexedBadge() {
             badge.textContent = unCount;
             badge.style.display = unCount > 0 ? 'inline-flex' : 'none';
         }
+        updateOpsBacklog(unCount);   // v17 Ops Board backlog card
     } catch(e) {}
 }
 
@@ -1102,7 +1199,8 @@ async function loadCatalogPage() {
     list.innerHTML = '<tr><td colspan="4" style="text-align:center;"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
     
     try {
-        const res = await fetch(`/api/admin/global/files/catalog/${currentCatalog}?page=${currentPage}`);
+        const _q = (document.getElementById('cat-search')?.value || '').trim();
+        const res = await fetch(`/api/admin/global/files/catalog/${currentCatalog}?page=${currentPage}${_q ? '&q=' + encodeURIComponent(_q) : ''}`);
         const data = await res.json();
         
         totalPages = data.total_pages;
@@ -1119,7 +1217,7 @@ async function loadCatalogPage() {
                 list.innerHTML += `<tr>
                     <td>
                         <div style="display:flex; align-items:center; gap:10px;">
-                            <img src="${item.poster || ''}" style="width:30px; height:45px; object-fit:cover; border-radius:4px; background:var(--surface);">
+                            <img src="${item.poster || ''}" loading="lazy" onerror="this.style.visibility='hidden'" style="width:30px; height:45px; object-fit:cover; border-radius:4px; background:var(--surface);">
                             <strong>${escapeHtml(item.title)}</strong>
                         </div>
                     </td>
@@ -1205,6 +1303,31 @@ async function loadMetaFiles() {
 function toggleAllUnidx(source) {
     const checkboxes = document.querySelectorAll('.unidx-cb');
     checkboxes.forEach(cb => cb.checked = source.checked);
+}
+
+async function runSeriesRepair() {
+    const btn = document.getElementById('btn-series-repair') || document.getElementById('ops-btn-repair');
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+    const backfillEl = document.getElementById('repair-backfill');
+    const backfill = backfillEl ? !!backfillEl.checked : true;   // default ON
+    try {
+        const res = await fetch('/api/admin/global/indexer/repair', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ backfill: backfill })
+        });
+        const data = await res.json();
+        if (data.ok) {
+            showNotification(data.message || 'Self-heal started.', 'info');
+            setTimeout(() => { loadUnindexedPage(); loadUnindexedBadge(); loadOpsActions(); }, 45000);
+        } else {
+            showNotification(data.detail || 'Self-heal could not start.', 'error');
+        }
+    } catch (e) {
+        showNotification('Network error starting self-heal.', 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+    }
 }
 
 async function purgeUnindexed() {
@@ -2412,6 +2535,7 @@ async function pollStreamActivity() {
         const res = await fetch('/api/admin/global/stream-activity');
         if (!res.ok) return;
         const d = await res.json();
+        updateOpsLive(d);        // v17: dispatch ring + stream board on the same 10-s poll
         document.getElementById('la-count').textContent = d.active_count || 0;
         document.getElementById('la-mbps').textContent = (d.total_mbps || 0).toFixed(1);
         document.getElementById('la-throttle').style.display = d.throttled ? '' : 'none';
@@ -2422,8 +2546,166 @@ async function pollStreamActivity() {
     } catch (e) {}
 }
 
+/* ================= v17: OPS BOARD =================
+   Pure readout layer. Every card is fed by an endpoint that already exists;
+   no new polling loops are started — Ops cards update inside checkIndexer,
+   pollStreamActivity and loadUnindexedBadge (the existing callers).        */
+function $op(id) { return document.getElementById(id); }
+function fmtAge(ts) {
+    if (!ts) return '—';
+    const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+    if (s < 90) return s + 's ago';
+    if (s < 5400) return Math.floor(s / 60) + 'm ago';
+    if (s < 172800) return Math.floor(s / 3600) + 'h ago';
+    return Math.floor(s / 86400) + 'd ago';
+}
+
+function updateOpsIndexer(d) {
+    const led = $op('ops-led-idx'); if (!led || !d) return;
+    const run = !!d.running;
+    led.style.background = run ? '#22c55e' : '#64748b';
+    const st = $op('ops-idx-state');
+    if (st) st.innerHTML = run ? '<span class="ops-ok">RUNNING</span>' : 'IDLE';
+    const bits = [];
+    if (run) {
+        bits.push(`${d.processed || 0} processed · ${d.indexed_total || 0} indexed`);
+        if (d.current_chat) bits.push(`now: chat ${escapeHtml(String(d.current_chat))} (${escapeHtml(d.current_filter || '-')})`);
+    } else {
+        bits.push(`${d.indexed_total || 0} indexed since boot`);
+        if (d.last_indexed_ts) bits.push(`last file: ${fmtAge(d.last_indexed_ts)}`);
+    }
+    if (d.last_error) bits.push(`<span class="ops-bad">⚠ ${escapeHtml(String(d.last_error).slice(0, 90))}</span>`);
+    const ls = d.last_sweep;
+    if (ls && ls.finished_at) {
+        const sc = (ls.status === 'completed') ? 'ops-ok' : 'ops-warn';
+        bits.push(`last sweep: <span class="${sc}">${escapeHtml(ls.status || '?')}</span> · ${ls.processed || 0} files · ${fmtAge(ls.finished_at)}`);
+    }
+    const sub = $op('ops-idx-sub');
+    if (sub) sub.innerHTML = bits.join('<br>') || '—';
+}
+
+function updateOpsBacklog(n) {
+    const el = $op('ops-backlog-n'); if (!el) return;
+    el.textContent = n;
+    el.className = 'ops-big ' + (n === 0 ? 'ops-ok' : (n > 25 ? 'ops-bad' : 'ops-warn'));
+    const card = $op('ops-card-backlog');
+    if (card) card.classList.toggle('ops-backlog-clean', n === 0);
+    const sub = $op('ops-backlog-sub');
+    if (sub) sub.innerHTML = n === 0
+        ? '✅ queue clean — every file mapped'
+        : 'files waiting for a TMDB link or parser fix';
+}
+
+function updateOpsLive(d) {
+    const ring = $op('ops-ring-fg'); if (!ring || !d) return;
+    const dsp = d.dispatch || {};
+    const led = $op('ops-led-disp');
+    const label = $op('ops-disp-label'), sub = $op('ops-disp-sub');
+    const bad = dsp.last_status && dsp.last_status !== 'ok';
+    if (!dsp.enabled) {
+        if (led) led.style.background = '#64748b';
+        if (label) label.textContent = 'manual mode';
+        if (sub) sub.textContent = 'no GITHUB_DISPATCH_TOKEN — feed updates rely on panel checks';
+        ring.style.strokeDashoffset = 100.5;
+    } else {
+        if (led) led.style.background = bad ? '#ef4444' : '#22c55e';
+        const due = dsp.next_due ? Math.max(0, dsp.next_due - Date.now() / 1000) : null;
+        const total = Math.max(1, (dsp.interval_min || 30) * 60);
+        if (label) label.innerHTML = due === null ? 'armed'
+            : `next in ${Math.max(1, Math.ceil(due / 60))}m`;
+        if (sub) sub.innerHTML = `last: <span class="${bad ? 'ops-bad' : 'ops-ok'}">${escapeHtml(dsp.last_status || '—')}</span> · fired ${dsp.total_fired || 0}× this boot`;
+        ring.style.strokeDashoffset = due === null ? 0 : (100.5 * Math.min(1, due / total));
+    }
+    const sum = $op('ops-stream-sum');
+    if (sum) sum.innerHTML = `${d.active_count || 0} active · <span class="ops-ok">${(d.total_mbps || 0).toFixed(1)}</span> Mbps` + (d.throttled ? ' &nbsp;<span class="ops-warn">⚠ throttled</span>' : '');
+    const rows = $op('ops-stream-rows');
+    if (rows) rows.innerHTML = (d.active || []).slice(0, 4)
+        .map(s => `⚡ ${escapeHtml(String(s.title || 'stream').slice(0, 70))} — ${s.instant_mbps || 0} Mbps`)
+        .join('<br>') || '<span style="color:var(--text-sec);">no active streams</span>';
+}
+
+async function loadOps() {
+    // Mongo availability is DERIVED from the /health call itself — the board
+    // never pings Atlas separately. Every fetch is guarded; a dead backend
+    // leaves a red card, never a broken page.
+    const t0 = performance.now();
+    try {
+        const res = await fetch('/api/admin/global/health');
+        const ms = Math.round(performance.now() - t0);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const d = await res.json();
+        const ledDb = $op('ops-led-db'), stDb = $op('ops-db-state'), subDb = $op('ops-db-sub');
+        if (ledDb) ledDb.style.background = '#22c55e';
+        if (stDb) stDb.innerHTML = `<span class="ops-ok">reachable</span> <span style="font-size:0.8rem;color:var(--text-sec);">${ms} ms</span>`;
+        const c = d.catalog_counts || {};
+        if (subDb) subDb.innerHTML = `files ${c.files || 0} · titles ${c.meta || 0} · unindexed ${c.unindexed || 0}`;
+        const overall = d.overall || '?';
+        const oc = overall === 'ok' ? 'ops-ok' : (overall === 'degraded' ? 'ops-warn' : 'ops-bad');
+        const ledSys = $op('ops-led-system');
+        if (ledSys) ledSys.style.background = overall === 'ok' ? '#22c55e' : (overall === 'degraded' ? '#eab308' : '#ef4444');
+        const ov = $op('ops-overall');
+        if (ov) ov.innerHTML = `<span class="${oc}">${escapeHtml(overall.toUpperCase())}</span>`;
+        const ss = d.session || {}, inst = d.instance || {};
+        const subSys = $op('ops-sys-sub');
+        if (subSys) subSys.innerHTML = `${escapeHtml(inst.hostname || '?')} · pid ${inst.pid || '?'}<br>`
+            + `userbot ${ss.connected ? '<span class="ops-ok">●</span>' : '<span class="ops-bad">●</span>'} dc ${ss.dc_id || '?'}`
+            + (ss.last_error ? ` <span class="ops-bad" title="${escapeHtml(String(ss.last_error))}">⚠ ${escapeHtml(String(ss.last_error).slice(0, 40))}</span>` : '')
+            + (d.bot_session ? ` · bots ${d.bot_session.connected || 0}/${d.bot_session.count || 0}` : '');
+        updateOpsIndexer(d.indexer || {});
+    } catch (e) {
+        const ledDb = $op('ops-led-db'), stDb = $op('ops-db-state'), subDb = $op('ops-db-sub');
+        if (ledDb) ledDb.style.background = '#ef4444';
+        if (stDb) stDb.innerHTML = '<span class="ops-bad">unreachable</span>';
+        if (subDb) subDb.textContent = 'backend call failed — cached views may be stale (' + escapeHtml(String(e.message || e)) + ')';
+    }
+    loadOpsActions();
+    loadOpsLeech();
+}
+
+async function loadOpsActions() {
+    const box = $op('ops-recent'); if (!box) return;
+    try {
+        const r = await fetch('/api/admin/global/ops-log');
+        const d = await r.json();
+        const ents = d.entries || [];
+        if (!ents.length) {
+            box.innerHTML = '<div class="ops-sub">nothing logged yet — the outcomes of Cleanup DB, Self-Heal and Sync sweeps will appear here, even if the tab was closed when they finished.</div>';
+            return;
+        }
+        const icons = { cleanup: '🧹', selfheal: '🪄', sweep: '📥' };
+        box.innerHTML = ents.map(e => {
+            const bits = Object.entries(e).filter(([k]) => !['type', 'status', 'at'].includes(k))
+                .map(([k, v]) => `${escapeHtml(k)}=${escapeHtml(String(v))}`).join(' · ');
+            const sc = (e.status === 'ok' || e.status === 'completed') ? 'ops-ok' : 'ops-bad';
+            return `<div class="ops-act-row"><span>${icons[e.type] || '•'} ${escapeHtml(e.type)}</span>`
+                + `<span class="${sc}">${escapeHtml(e.status)}</span>`
+                + `<span style="color:var(--text-sec);">${bits.slice(0, 160)}</span>`
+                + `<span style="margin-left:auto;color:var(--text-sec);">${fmtAge(e.at)}</span></div>`;
+        }).join('');
+    } catch (e) { box.innerHTML = '<div class="ops-sub">actions log unavailable</div>'; }
+}
+
+async function loadOpsLeech() {
+    try {
+        const r = await fetch('/api/admin/global/predvd/status');
+        const d = await r.json();
+        const s = d.status || {}, set = d.settings || {};
+        const el = $op('ops-leech-state'), sub = $op('ops-leech-sub');
+        if (el) el.innerHTML = !set.enabled ? '<span class="ops-warn">paused</span>'
+            : (s.running ? '<span class="ops-ok">checking feed…</span>' : '<span class="ops-ok">armed</span>');
+        if (sub) sub.innerHTML = `primary <b style="color:var(--text);">${escapeHtml(String(set.group_id || '—'))}</b>`
+            + (s.last_check_time ? ` · last check ${fmtAge(s.last_check_time)}` : '')
+            + (s.last_check_status ? ` (${escapeHtml(String(s.last_check_status))})` : '')
+            + `<br>queue: ${s.queue_pending || 0} waiting${s.indexer_busy ? ' <span class="ops-warn">· indexer busy → queue holding</span>' : ''}`
+            + ` · history ${d.history_count || 0}`;
+    } catch (e) {
+        const sub = $op('ops-leech-sub');
+        if (sub) sub.textContent = 'automator status unavailable';
+    }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
-    switchView('{{ initial_view|default("dashboard") }}');
+    switchView('{{ initial_view|default("ops") }}');
     checkIndexer();
     checkTasks();
     pollStreamActivity();
