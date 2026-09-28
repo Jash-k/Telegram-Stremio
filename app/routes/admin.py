@@ -367,6 +367,13 @@ async def _map_file(file_doc, tmdb_id, media_type, is_video_song, details, se_ov
         "rating": details.get("vote_average", 0.0),
         "updated_at": time.time(),
     }
+    # v17: manual links get the same index-time extras (stills / season
+    # posters / trailer) so chat-linked titles look identical in Stremio.
+    try:
+        from app.metadata import media_fields_from_details
+        update_data.update(media_fields_from_details(details, media_type))
+    except Exception:
+        pass
     languages = languages_from_filename(filename)
     if details.get("original_language") == "ta" and "Tamil" not in languages:
         languages.append("Tamil")

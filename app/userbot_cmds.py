@@ -22,7 +22,9 @@ _HELP = (
     "/heal — Self-Heal run (episode fix + relinks + unindexed retry)\n"
     "/feed — check release feed + drain leech queue now\n"
     "/primary list — leech groups | /primary <n|id> — switch primary\n"
-    "/watch add <title> — DM me when it lands | /watch del | /watch list"
+    "/watch add <title> — DM me when it lands | /watch del | /watch list\n"
+    "/li <Title [year]> — reply to a shared file → link it to that exact title\n"
+    "/livs <Title [year]> — same, but into the title's Video Songs collection"
 )
 
 
@@ -130,6 +132,12 @@ async def handle_command(client, message):
 
         if cmd == "/start" and not arg:
             reply = _HELP
+        elif cmd in ("/li", "/livs"):
+            # /li /livs take the free-form title after them (original case!) —
+            # parts[1] is NOT a subcommand here.
+            query = " ".join(p.strip() for p in parts[1:] if p.strip())
+            from .quicklink import quicklink
+            reply = await quicklink(client, message, query, as_song=(cmd == "/livs"))
         elif cmd == "/stats":
             reply = await _stats_text()
         elif cmd == "/heal":
@@ -225,7 +233,7 @@ def install(client) -> None:
         from pyrogram import filters, handlers
 
         cmd_filter = filters.me & filters.command(
-            ["stats", "heal", "feed", "primary", "watch", "start"], prefixes="/"
+            ["stats", "heal", "feed", "primary", "watch", "li", "livs", "start"], prefixes="/"
         )
         client.add_handler(handlers.MessageHandler(handle_command, cmd_filter))
         _installed = True
