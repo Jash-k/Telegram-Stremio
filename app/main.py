@@ -88,8 +88,9 @@ async def lifespan(app: FastAPI):
 
         keepalive_task = asyncio.create_task(keepalive_loop())
 
-    # Reliable external trigger for the mv_scrapper GitHub Actions workflow
-    # (workflow_dispatch every GITHUB_DISPATCH_MINUTES). No-op without a token.
+    # Reliable external trigger for your GitHub Actions workflows
+    # (mv_scrapper scrape.yml + moviesda.yml, live_play jash-live.yml), each on
+    # its own cadence from GITHUB_DISPATCH_TARGETS. No-op without a token.
     github_dispatch_task = None
     if config.GITHUB_DISPATCH_TOKEN:
         from app.keepalive import github_dispatch_loop

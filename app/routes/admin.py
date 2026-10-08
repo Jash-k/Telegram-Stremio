@@ -856,6 +856,31 @@ async def tasks_status(_: bool = Depends(require_auth)):
     }
 
 
+@router.get("/dispatch/targets")
+async def dispatch_targets(_: bool = Depends(require_auth)):
+    """The configured GitHub Actions dispatch targets + their live state."""
+    from app.keepalive import dispatch_state
+
+    return dispatch_state()
+
+
+@router.post("/dispatch/fire/{target_id:path}")
+async def dispatch_fire(target_id: str, _: bool = Depends(require_auth)):
+    """Fire one workflow_dispatch immediately (the Ops Board's ⚡ Run button).
+
+    `target_id` is the `owner/repo@workflow`-style id from GET /dispatch/targets
+    — it contains a slash, hence the `:path` converter.
+    Does not change the target's cadence: the next scheduled run still happens
+    on time.
+    """
+    from app.keepalive import trigger_target_now
+
+    result = await trigger_target_now(target_id)
+    if not result.get("ok") and "unknown target" in str(result.get("status", "")):
+        raise HTTPException(status_code=404, detail=result)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Stremio compatibility audit (read-only)
 # ---------------------------------------------------------------------------
@@ -973,7 +998,8 @@ async def stream_activity(_: bool = Depends(require_auth)):
         dsp = dispatch_state()
     except Exception:
         dsp = {"enabled": False, "last_status": None, "next_due": None,
-               "interval_min": 0, "total_fired": 0, "last_ts": None}
+               "interval_min": 0, "total_fired": 0, "last_ts": None,
+               "targets": []}
     return {
         "active_count": len(active),
         "total_mbps": round(total_mbps, 2),

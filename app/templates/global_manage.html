@@ -141,7 +141,7 @@
             </div>
         </div>
         <div class="ops-card">
-            <h4><span class="ops-led" id="ops-led-disp"></span> Scraper Feed</h4>
+            <h4><span class="ops-led" id="ops-led-disp"></span> Workflow Feeds</h4>
             <div style="display:flex;align-items:center;gap:12px;">
                 <svg width="46" height="46" viewBox="0 0 40 40" style="transform:rotate(-90deg);flex:none;">
                     <circle cx="20" cy="20" r="16" fill="none" stroke="var(--border)" stroke-width="4"/>
@@ -152,6 +152,7 @@
                     <div class="ops-sub" id="ops-disp-sub" style="margin-top:2px;"></div>
                 </div>
             </div>
+            <div id="ops-disp-rows" style="margin-top:10px;"></div>
             <div class="ops-actions"><button class="btn btn-ghost" onclick="syncPreDVDFeed()">⚡ Check feed now</button></div>
         </div>
         <div class="ops-card">
@@ -849,6 +850,27 @@ async function toggleIndexer() {
         });
         checkIndexer();
     }
+}
+
+async function fireDispatch(targetId, btn) {
+    if (!targetId) return;
+    const old = btn ? btn.innerHTML : '';
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>'; }
+    try {
+        const res = await fetch(`/api/admin/global/dispatch/fire/${targetId.split('/').map(encodeURIComponent).join('/')}`,
+                                { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok) {
+            alert(`✅ Dispatched ${targetId}.\nThe workflow run is queued on GitHub.`);
+        } else {
+            const detail = data.detail || data;
+            alert(`❌ ${targetId}: ${typeof detail === 'string' ? detail : JSON.stringify(detail, null, 2)}`);
+        }
+    } catch (e) {
+        alert(`❌ ${targetId}: ${e.message || e}`);
+    }
+    if (btn) { btn.disabled = false; btn.innerHTML = old; }
+    try { await pollStreamActivity(); } catch (e) { /* the 10-s poll catches up */ }
 }
 
 async function runStremioAudit() {
@@ -2655,25 +2677,71 @@ function updateOpsBacklog(n) {
         : 'files waiting for a TMDB link or parser fix';
 }
 
+function opsCadence(min) {
+    min = Number(min) || 0;
+    if (min >= 1440) return `${Math.round(min / 1440)}d`;
+    if (min >= 60) return `${Math.round(min / 60)}h`;
+    return `${min}m`;
+}
+
+function opsDueLabel(nextDue, minutes) {
+    if (!nextDue) return 'armed';
+    const secs = Math.max(0, nextDue - Date.now() / 1000);
+    if (secs < 60) return `${Math.max(1, Math.round(secs))}s`;
+    if (secs < 3600) return `${Math.ceil(secs / 60)}m`;
+    return `${Math.floor(secs / 3600)}h ${Math.round((secs % 3600) / 60)}m`;
+}
+
 function updateOpsLive(d) {
     const ring = $op('ops-ring-fg'); if (!ring || !d) return;
     const dsp = d.dispatch || {};
     const led = $op('ops-led-disp');
     const label = $op('ops-disp-label'), sub = $op('ops-disp-sub');
+    const dspRows = $op('ops-disp-rows');
+    const targets = Array.isArray(dsp.targets) ? dsp.targets : [];
     const bad = dsp.last_status && dsp.last_status !== 'ok';
     if (!dsp.enabled) {
         if (led) led.style.background = '#64748b';
         if (label) label.textContent = 'manual mode';
-        if (sub) sub.textContent = 'no GITHUB_DISPATCH_TOKEN — feed updates rely on panel checks';
+        if (sub) sub.textContent = 'no GITHUB_DISPATCH_TOKEN — feed updates rely on each repo\'s own cron';
+        if (dspRows) dspRows.innerHTML = '';
         ring.style.strokeDashoffset = 100.5;
     } else {
         if (led) led.style.background = bad ? '#ef4444' : '#22c55e';
-        const due = dsp.next_due ? Math.max(0, dsp.next_due - Date.now() / 1000) : null;
-        const total = Math.max(1, (dsp.interval_min || 30) * 60);
-        if (label) label.innerHTML = due === null ? 'armed'
-            : `next in ${Math.max(1, Math.ceil(due / 60))}m`;
-        if (sub) sub.innerHTML = `last: <span class="${bad ? 'ops-bad' : 'ops-ok'}">${escapeHtml(dsp.last_status || '—')}</span> · fired ${dsp.total_fired || 0}× this boot`;
-        ring.style.strokeDashoffset = due === null ? 0 : (100.5 * Math.min(1, due / total));
+        // The ring counts down to whichever target is due soonest.
+        const due = targets.map(t => t.next_due).filter(Boolean);
+        const soonest = due.length ? Math.min.apply(null, due) : dsp.next_due;
+        const soonestT = targets.find(t => t.next_due === soonest);
+        const win = Math.max(1, ((soonestT && soonestT.minutes) || dsp.interval_min || 30) * 60);
+        const secsLeft = soonest ? Math.max(0, soonest - Date.now() / 1000) : null;
+        if (label) label.innerHTML = secsLeft === null ? 'armed'
+            : `next in ${opsDueLabel(soonest, win)}`;
+        const fired = targets.reduce((n, t) => n + (t.total_fired || 0), 0);
+        if (sub) sub.innerHTML = `last: <span class="${bad ? 'ops-bad' : 'ops-ok'}">${escapeHtml(dsp.last_status || '—')}</span> · ${fired} dispatch${fired === 1 ? '' : 'es'} this boot`;
+        ring.style.strokeDashoffset = secsLeft === null ? 0 : (100.5 * Math.min(1, secsLeft / win));
+
+        if (dspRows) {
+            dspRows.innerHTML = targets.length ? targets.map(t => {
+                const tbad = t.last_status && t.last_status !== 'ok';
+                const cls = !t.last_status ? 'ops-sub' : (tbad ? 'ops-bad' : 'ops-ok');
+                const dot = !t.last_status ? '#64748b' : (tbad ? '#ef4444' : '#22c55e');
+                return `<div class="ops-act-row">
+                    <span class="ops-led" style="background:${dot};flex:none;"></span>
+                    <span style="flex:1 1 auto;min-width:0;">
+                        <strong style="font-size:.8rem;">${escapeHtml(t.id)}</strong>
+                        <span style="color:var(--text-sec);"> · every ${escapeHtml(opsCadence(t.minutes))}</span>
+                        <div class="${cls}" style="font-size:.74rem;margin-top:1px;">
+                            next in ${escapeHtml(opsDueLabel(t.next_due, t.minutes))}
+                            · last ${escapeHtml(t.last_status || '—')}
+                            · fired ${t.total_fired || 0}×
+                        </div>
+                    </span>
+                    <button class="btn btn-ghost" style="padding:.2rem .5rem;font-size:.72rem;flex:none;"
+                            onclick="fireDispatch('${escapeHtml(t.id)}', this)"
+                            title="Send one workflow_dispatch to ${escapeHtml(t.repo)} @ ${escapeHtml(t.workflow)} now">⚡ Run</button>
+                </div>`;
+            }).join('') : '<div class="ops-sub">no dispatch targets configured</div>';
+        }
     }
     const sum = $op('ops-stream-sum');
     if (sum) sum.innerHTML = `${d.active_count || 0} active · <span class="ops-ok">${(d.total_mbps || 0).toFixed(1)}</span> Mbps` + (d.throttled ? ' &nbsp;<span class="ops-warn">⚠ throttled</span>' : '');

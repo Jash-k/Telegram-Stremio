@@ -109,17 +109,127 @@ KEEPALIVE_MINUTES = _int("KEEPALIVE_MINUTES", 15)
 SAFETY_DM_ENABLED = os.getenv("SAFETY_DM_ENABLED", "true").lower() in ("true", "1", "yes")
 SAFETY_BACKLOG_THRESHOLD = _int("SAFETY_BACKLOG_THRESHOLD", 25)
 
-# --- External 1TamilMV scraper trigger (GitHub Actions workflow_dispatch) ----
-# Your mv_scrapper repo runs on GitHub Actions. Instead of relying on GitHub's
-# flaky scheduled runs, this app pokes the workflow's dispatch API on a timer so
-# it runs reliably. Set GITHUB_DISPATCH_TOKEN to enable (fine-grained PAT with
-# Actions: Read+write on the mv_scrapper repo). Leave blank to disable.
+# --- External GitHub Actions workflow triggers ------------------------------
+# Your scraper / playlist repos run on GitHub Actions. Instead of relying on
+# GitHub's flaky scheduled runs, this app pokes each workflow's dispatch API on
+# its own timer so it runs reliably. One fine-grained PAT (Actions: Read+write,
+# repository access to every target repo) drives all of them.
+# Leave GITHUB_DISPATCH_TOKEN blank to disable.
 GITHUB_DISPATCH_TOKEN = os.getenv("GITHUB_DISPATCH_TOKEN", "").strip()
 GITHUB_DISPATCH_OWNER = os.getenv("GITHUB_DISPATCH_OWNER", "Jash-k").strip()
 GITHUB_DISPATCH_REPO = os.getenv("GITHUB_DISPATCH_REPO", "mv_scrapper").strip()
 GITHUB_DISPATCH_WORKFLOW = os.getenv("GITHUB_DISPATCH_WORKFLOW", "scrape.yml").strip()
 GITHUB_DISPATCH_REF = os.getenv("GITHUB_DISPATCH_REF", "main").strip()
 GITHUB_DISPATCH_MINUTES = _int("GITHUB_DISPATCH_MINUTES", 30)
+
+# Multiple targets, one per workflow. Comma-separated; each entry is
+#   repo|workflow.yml|minutes|ref|input=value,input2=value2
+# with `ref` and the inputs optional (ref defaults to GITHUB_DISPATCH_REF).
+# A bare "repo" or "repo|workflow.yml" is accepted too.
+#
+# Input values are coerced to the type the workflow declares: true/false ->
+# boolean, digits -> number, anything else stays a string.
+#
+# Leave GITHUB_DISPATCH_TARGETS EMPTY to keep the legacy single-target
+# behaviour built from the four variables above (nothing breaks on upgrade).
+_DEFAULT_DISPATCH_TARGETS = (
+    "mv_scrapper|scrape.yml|30,"
+    "mv_scrapper|moviesda.yml|360,"
+    "live_play|jash-live.yml|60||force=false"
+)
+GITHUB_DISPATCH_TARGETS_RAW = os.getenv("GITHUB_DISPATCH_TARGETS", "").strip()
+
+
+def _coerce_input(raw: str):
+    low = raw.strip().lower()
+    if low in ("true", "false"):
+        return low == "true"
+    try:
+        return int(raw.strip())
+    except ValueError:
+        pass
+    try:
+        return float(raw.strip())
+    except ValueError:
+        return raw.strip()
+
+
+def _parse_dispatch_targets(raw: str) -> list[dict]:
+    """Parse GITHUB_DISPATCH_TARGETS into a list of target dicts.
+
+    Tolerant on purpose: a half-filled secret should never take the dispatcher
+    down, it should just fall back to the documented defaults.
+    """
+    out: list[dict] = []
+    for chunk in str(raw or "").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = [p.strip() for p in chunk.split("|")]
+
+        # A bare ".yml" first field means "this workflow in the configured repo"
+        # (repo|workflow|minutes|ref|inputs) — without it "moviesda.yml|360"
+        # would be misread as owner=Jash-k repo=moviesda.yml workflow=360.
+        if (parts and parts[0].endswith((".yml", ".yaml")) and "/" not in parts[0]
+                and len(parts) >= 2 and not parts[1].endswith((".yml", ".yaml"))
+                and (not parts[1] or parts[1].replace("-", "").isdigit())):
+            parts = [GITHUB_DISPATCH_REPO] + parts
+
+        repo = parts[0] if len(parts) > 0 else ""
+        workflow = parts[1] if len(parts) > 1 else ""
+        minutes = parts[2] if len(parts) > 2 else ""
+        ref = parts[3] if len(parts) > 3 else ""
+        # Inputs are comma-separated key=value pairs; `;` also works since the
+        # outer list is comma-separated.
+        inputs_raw = parts[4] if len(parts) > 4 else ""
+
+        if not repo:
+            continue
+        bare = "/" not in repo
+        if bare:
+            repo = f"{GITHUB_DISPATCH_OWNER}/{repo}"
+        if not workflow:
+            # A bare repo name means "the workflow configured globally"; an
+            # explicit owner/repo with no workflow means GitHub's default file.
+            workflow = (GITHUB_DISPATCH_WORKFLOW
+                        if bare and repo.endswith(f"/{GITHUB_DISPATCH_REPO}")
+                        else "default")
+        try:
+            interval = int(minutes)
+        except (TypeError, ValueError):
+            interval = GITHUB_DISPATCH_MINUTES
+        inputs: dict = {}
+        for pair in inputs_raw.replace(";", ",").split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                if k.strip():
+                    inputs[k.strip()] = _coerce_input(v)
+        out.append({
+            "id": f"{repo.split('/', 1)[-1]}/{workflow}",
+            "repo": repo,
+            "workflow": workflow,
+            "minutes": max(5, interval),
+            "ref": ref or GITHUB_DISPATCH_REF or "main",
+            "inputs": inputs,
+        })
+    return out
+
+
+# The live target list: the explicit multi-target variable when set, otherwise
+# the documented default (tamilmv 30 min · moviesda 6 h · live_play 1 h), and
+# only fall back to the single legacy target if that parsing yields nothing.
+GITHUB_DISPATCH_TARGETS = (
+    _parse_dispatch_targets(GITHUB_DISPATCH_TARGETS_RAW)
+    or _parse_dispatch_targets(_DEFAULT_DISPATCH_TARGETS)
+    or [{
+        "id": f"{GITHUB_DISPATCH_REPO}/{GITHUB_DISPATCH_WORKFLOW}",
+        "repo": f"{GITHUB_DISPATCH_OWNER}/{GITHUB_DISPATCH_REPO}",
+        "workflow": GITHUB_DISPATCH_WORKFLOW,
+        "minutes": max(5, GITHUB_DISPATCH_MINUTES),
+        "ref": GITHUB_DISPATCH_REF or "main",
+        "inputs": {},
+    }]
+)
 
 # Periodic incremental channel re-scan (the every-5-minutes background indexer).
 # New files are ALREADY indexed in real time by the live update handlers, so this

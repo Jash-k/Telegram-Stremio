@@ -161,6 +161,8 @@ session cookie **or** the `X-Admin-Key` header:
 | `POST /files/batch_map` · `POST /files/{id}/map` | TMDb mapping |
 | `DELETE /meta/{id}` · `/catalogs/{id}` · `/files/{id}` | deletes |
 | `GET /stremio-audit` | read-only scan for entries Stremio cannot render (`?text=1` for plain text) |
+| `GET /dispatch/targets` | the configured GitHub workflow triggers + their live state |
+| `POST /dispatch/fire/{target_id}` | fire one `workflow_dispatch` right now (target id contains a `/`) |
 
 Trigger a full historic scan (equivalent to the panel's "Sync"):
 
@@ -172,6 +174,87 @@ curl -X POST https://YOUR-URL/api/admin/global/index/start \
 ```
 
 After that, the live handlers keep it updated automatically.
+
+---
+
+## GitHub Actions workflow triggers
+
+GitHub's own `schedule:` cron is best-effort — it silently skips runs when the
+runner queue is busy, and on free-tier repos it can be an hour late or not run
+at all. So this app fires a `workflow_dispatch` at each of your workflows on its
+own timer, which starts a run **immediately**. One task, one 15-second tick;
+every target carries its own `next_due`, so a 30-minute scraper and a 6-hour
+scraper coexist without drift.
+
+Default targets (override with `GITHUB_DISPATCH_TARGETS`):
+
+| Repo | Workflow | Cadence | Notes |
+|------|----------|---------|-------|
+| `Jash-k/mv_scrapper` | `scrape.yml` | every 30 min | 1TamilMV 720p/1080p |
+| `Jash-k/mv_scrapper` | `moviesda.yml` | every 6 h | MoviesDa direct MP4 |
+| `Jash-k/live_play` | `jash-live.yml` | every 1 h | `force=false` → health-check only |
+
+`GITHUB_DISPATCH_TARGETS` is comma-separated, one target per entry:
+
+```
+repo|workflow.yml|minutes|ref|input=value,input2=value2
+```
+
+`repo` may be bare (`mv_scrapper` → `GITHUB_DISPATCH_OWNER` is prefixed) or
+`owner/repo`. `ref` and the inputs are optional; a bare `workflow.yml|minutes`
+entry attaches to the configured repo. Input values are coerced to the type the
+workflow declares (`true`/`false` → boolean, digits → number, else string), so
+`live_play`'s boolean `force` input is sent as JSON `false`, not `"false"`
+(GitHub rejects the string for a boolean input with a 422).
+
+```bash
+# tamilmv every 45 min, moviesda every 2 h, live playlist rebuilt for real
+GITHUB_DISPATCH_TARGETS=mv_scrapper|scrape.yml|45,mv_scrapper|moviesda.yml|120,live_play|jash-live.yml|60||force=true
+```
+
+Each target's own `concurrency.group` means overlapping dispatches queue rather
+than collide, so firing manually is always safe. The Ops Board's **Workflow
+Feeds** card shows a per-target countdown, last status and fire count, with a
+⚡ **Run** button per row.
+
+### One PAT for all of them
+
+Create a single **fine-grained** token: *Repository access → Only select
+repositories →* **`Jash-k/mv_scrapper` and `Jash-k/live_play`**; *Permissions →
+Repository permissions → Actions →* **Read and write**. Paste it into
+`GITHUB_DISPATCH_TOKEN` as a Koyeb **secret** and redeploy.
+
+### "Bad credentials" / HTTP 401
+
+```
+WARNING | global-stremio | [GITHUB] dispatch failed HTTP 401: {"message":"Bad credentials"}
+```
+
+GitHub checks the token *before* it checks permissions, so a 401 means the token
+was not recognised at all — expired, revoked, mistyped, or pasted with a
+trailing newline or surrounding quotes. It is **never** a scope problem. The app
+now says so in the log, and after 3 consecutive 401s it backs off to one retry
+every 6 hours so a bad secret stops flooding the log (a good token clears the
+backoff on the next success).
+
+Config is read **once at boot**, so replacing the Koyeb secret needs a redeploy.
+
+Diagnose without deploying — the tool checks who the token belongs to, its
+scopes and expiry, which repos it can see, which workflows exist in them, and
+whether each one declares `workflow_dispatch`:
+
+```bash
+python3 tools/check_github_dispatch.py            # every configured target
+python3 tools/check_github_dispatch.py --fire     # send one real dispatch each
+python3 tools/check_github_dispatch.py --repo Jash-k/live_play --workflow jash-live.yml
+```
+
+The other codes, for reference: **403** = recognised but refused (repo not in
+the PAT's selection, or no `Actions: write`); **404** = cannot see the repo or
+the workflow filename is wrong (GitHub hides private repos behind 404, so a typo
+and a missing permission look identical); **422** = the workflow has no
+`workflow_dispatch:` trigger, a required input is missing, or `ref` is not a
+real branch.
 
 ---
 
