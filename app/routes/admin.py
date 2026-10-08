@@ -857,6 +857,37 @@ async def tasks_status(_: bool = Depends(require_auth)):
 
 
 # ---------------------------------------------------------------------------
+# Stremio compatibility audit (read-only)
+# ---------------------------------------------------------------------------
+
+@router.get("/stremio-audit")
+async def stremio_audit(text: int = 0, examples: int = 5,
+                        _: bool = Depends(require_auth)):
+    """Scan the GlobalDB for everything that breaks a Stremio details page.
+
+    Read-only: nothing is written or repaired. `?text=1` returns the plain-text
+    report instead of JSON.
+    """
+    from app.stremio_audit import format_report, run_audit
+
+    if not db.is_connected():
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Database temporarily unreachable; try again shortly."},
+        )
+    try:
+        report = await run_audit(limit_examples=max(1, min(int(examples), 25)))
+    except Exception as exc:
+        LOGGER.error("[AUDIT] failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Audit failed: {exc}")
+    if text:
+        from fastapi.responses import PlainTextResponse
+
+        return PlainTextResponse(format_report(report))
+    return report
+
+
+# ---------------------------------------------------------------------------
 # Health / telemetry (one call to see everything)
 # ---------------------------------------------------------------------------
 

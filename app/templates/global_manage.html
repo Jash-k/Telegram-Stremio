@@ -119,7 +119,12 @@
             <div class="ops-actions">
                 <button class="btn btn-ghost" onclick="switchView('health')"><i class="fa-solid fa-stethoscope"></i> Full health details</button>
                 <button class="btn btn-ghost" onclick="loadOps()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+                <button class="btn btn-ghost" id="ops-btn-audit" onclick="runStremioAudit()"
+                        title="Read-only scan for GlobalDB entries Stremio cannot render (the &quot;no information available&quot; titles).">
+                    <i class="fa-solid fa-clipboard-check"></i> Audit Stremio
+                </button>
             </div>
+            <div class="ops-sub" id="ops-audit-sub" style="margin-top:8px;"></div>
         </div>
         <div class="ops-card">
             <h4><span class="ops-led" id="ops-led-db"></span> MongoDB (Atlas)</h4>
@@ -844,6 +849,60 @@ async function toggleIndexer() {
         });
         checkIndexer();
     }
+}
+
+async function runStremioAudit() {
+    const btn = document.getElementById('ops-btn-audit');
+    const sub = document.getElementById('ops-audit-sub');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Auditing…'; }
+    if (sub) sub.textContent = 'scanning meta + files (read-only)…';
+    let data = null;
+    try {
+        const res = await fetch('/api/admin/global/stremio-audit?examples=5');
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    } catch (e) {
+        if (sub) sub.innerHTML = `<span class="ops-bad">audit failed: ${escapeHtml(e.message || e)}</span>`;
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-clipboard-check"></i> Audit Stremio'; }
+        return;
+    }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-clipboard-check"></i> Audit Stremio'; }
+
+    const issues = data.issues || {};
+    const keys = Object.keys(issues).sort((a, b) => issues[b].count - issues[a].count);
+    const t = data.totals || {};
+    if (sub) {
+        sub.innerHTML = keys.length
+            ? `<span class="${data.ok ? 'ops-warn' : 'ops-bad'}">${keys.length} issue type(s) found</span> · ${t.meta || 0} titles · ${t.files || 0} files`
+            : `<span class="ops-ok">clean</span> · ${t.meta || 0} titles · ${t.files || 0} files`;
+    }
+
+    const rows = keys.length ? keys.map(k => {
+        const v = issues[k];
+        const sev = /CRITICAL/.test(v.impact) ? 'ops-bad' : (/HIGH|MEDIUM/.test(v.impact) ? 'ops-warn' : 'ops-sub');
+        const ex = (v.examples || []).map(e => `<div style="opacity:.75;font-size:.74rem;">· ${escapeHtml(e)}</div>`).join('');
+        return `<tr>
+            <td style="white-space:nowrap;"><strong>${v.count}</strong></td>
+            <td><div class="${sev}">${escapeHtml(v.label)}</div>
+                <div style="font-size:.74rem;opacity:.8;margin-top:3px;">${escapeHtml(v.impact)}</div>
+                ${ex}</td>
+        </tr>`;
+    }).join('') : `<tr><td colspan="2" class="ops-ok">No Stremio-visible defects found.</td></tr>`;
+
+    const html = `<!doctype html><meta charset="utf-8"><title>Stremio audit</title>
+<body style="font:14px/1.5 system-ui,sans-serif;margin:24px;background:#0b1020;color:#e2e8f0;">
+<h2 style="margin:0 0 4px;">GlobalDB → Stremio audit</h2>
+<div style="opacity:.7;margin-bottom:16px;">${t.meta || 0} meta docs · ${t.files || 0} files · read-only, nothing was modified</div>
+<table style="border-collapse:collapse;width:100%;max-width:900px;">
+<thead><tr style="text-align:left;border-bottom:1px solid #334155;">
+<th style="padding:6px;">Count</th><th style="padding:6px;">Issue</th></tr></thead>
+<tbody>${rows}</tbody></table></body>`;
+
+    const w = window.open('', '_blank');
+    if (w) { w.document.write(html); w.document.close(); }
+    else alert(keys.length
+        ? keys.map(k => `${issues[k].count} × ${issues[k].label}`).join('\n')
+        : 'No Stremio-visible defects found.');
 }
 
 async function cleanupDatabase() {

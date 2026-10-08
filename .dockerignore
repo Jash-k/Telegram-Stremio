@@ -8,3 +8,5 @@ __pycache__
 README.md
 Dockerfile
 docker-compose.yml
+tests/
+pytest.ini

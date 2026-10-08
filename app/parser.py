@@ -631,13 +631,67 @@ def build_global_file_query(meta_id: str, season=None, episode=None) -> dict:
     return query
 
 
-async def resolve_global_meta(coll, content_id) -> Optional[dict]:
-    """Resolve a meta doc from its canonical id, TMDb id, IMDb id, or alias."""
+# Stremio only knows these content types. Anything else ("tv", "TV", "", None)
+# makes stremio-core reject the whole meta response -> the details page renders
+# "no information available". Normalize on the way out, every time.
+_STREMIO_TYPES = {"movie", "series", "channel"}
+
+# Values written by older indexers / the upstream project that mean "series".
+_SERIES_ALIASES = {"series", "tv", "show", "tvshow", "tv_show", "episode", "episodes"}
+
+
+def stremio_type(value, default: str = "movie") -> str:
+    """Map a stored `media_type` onto a valid Stremio content type.
+
+    Returns ``""`` when ``default`` is ``None`` and the value is unrecognised,
+    so callers can tell "no usable type" apart from "assume movie".
+    """
+    v = str(value or "").strip().lower()
+    if v in _SERIES_ALIASES:
+        return "series"
+    if v in _STREMIO_TYPES:
+        return v
+    if default in _STREMIO_TYPES:
+        return default
+    return "" if default is None else "movie"
+
+
+async def resolve_global_meta(coll, content_id, want_type: str = None) -> Optional[dict]:
+    """Resolve a meta doc from its canonical id, TMDb id, IMDb id, or alias.
+
+    ``want_type`` (a Stremio type: "movie"/"series") disambiguates the very
+    common case of several titles sharing one IMDb id — an original and its
+    remake, or a movie and its series adaptation. Without it ``find_one``
+    returns whichever document Mongo hits first, so clicking title A could
+    open title B (or open a *series* doc from a *movie* catalog, which Stremio
+    then refuses to render).
+    """
     content_id = str(content_id or "").strip()
     if not content_id:
         return None
+
+    # Fast path: the canonical primary key.
     meta = await coll.find_one({"_id": content_id})
     if meta:
         return meta
-    meta = await coll.find_one({"$or": [{"imdb_id": content_id}, {"aliases": content_id}]})
-    return meta
+
+    # Slow path: imdb_id / alias. Usually exactly one doc matches, so peek at
+    # only two — enough to know whether the id is ambiguous without loading
+    # every duplicate in full.
+    candidates = await coll.find(
+        {"$or": [{"imdb_id": content_id}, {"aliases": content_id}]},
+    ).to_list(2)
+    if not candidates:
+        return None
+    want = stremio_type(want_type, None) if want_type else None
+    if len(candidates) == 1 or not want:
+        return candidates[0]
+
+    def rank(doc) -> tuple:
+        same_type = 0 if stremio_type(doc.get("media_type")) == want else 1
+        titled = 0 if doc.get("title") else 1
+        # newest first, then a stable key so the pick never flaps between runs
+        return (same_type, titled, -float(doc.get("updated_at") or 0),
+                str(doc.get("_id")))
+
+    return sorted(candidates, key=rank)[0]

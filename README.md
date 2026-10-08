@@ -160,6 +160,7 @@ session cookie **or** the `X-Admin-Key` header:
 | `GET /files/catalog/{id}` · `GET /meta/{id}/files` | catalog/meta drilldown |
 | `POST /files/batch_map` · `POST /files/{id}/map` | TMDb mapping |
 | `DELETE /meta/{id}` · `/catalogs/{id}` · `/files/{id}` | deletes |
+| `GET /stremio-audit` | read-only scan for entries Stremio cannot render (`?text=1` for plain text) |
 
 Trigger a full historic scan (equivalent to the panel's "Sync"):
 
@@ -171,6 +172,48 @@ curl -X POST https://YOUR-URL/api/admin/global/index/start \
 ```
 
 After that, the live handlers keep it updated automatically.
+
+---
+
+## Troubleshooting: "There is no information available"
+
+That message is **Stremio's**, not this app's. It means Stremio could not turn
+your `/meta/{type}/{id}.json` response into a meta item. stremio-core is strict
+about it: `metas` (catalog) entries it cannot parse are silently *dropped*, but
+the `meta` response has **no** error tolerance — a single bad field discards the
+whole thing and the details page comes up empty.
+
+The shapes that cause it, all now normalized on read:
+
+| Cause | Fix |
+|-------|-----|
+| `trailerStreams: [{"source": "<yt key>"}]` — a Stream's source is *flattened*, so YouTube needs `{"ytId": "…"}`. One bad trailer killed every title that had one. | emit `ytId`, drop keys that are not an 11-char id |
+| `media_type: "tv"` — Stremio reads `tv` as a **live channel**, so a VOD series renders empty | normalize `tv`/`show` → `series` |
+| two titles sharing one IMDb id — `find_one` returned whichever doc Mongo hit first | emit the unique canonical `tmdb:<id>` for ambiguous ids |
+| empty `title`, `year: null`, `genres: null`, relative image URLs, `moviedb_id: null` | required-field fallbacks + spec types |
+| `videos: []` on a season-pack-only series | fall back to one row per pack season |
+| an empty meta cached for 5 min after one Atlas blip | empty results are no longer cached |
+
+Diagnose your own library (read-only, writes nothing):
+
+```bash
+python3 tools/audit_stremio_meta.py            # or --json / --examples 10
+curl -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  "https://YOUR-URL/api/admin/global/stremio-audit?text=1"
+```
+
+…or in the panel: **Ops Board → Audit Stremio**.
+
+After deploying a fix, **uninstall and reinstall the addon in Stremio** (or bump
+`manifest.version`) — Stremio caches meta aggressively, and a stale empty meta
+survives the server-side fix.
+
+Regression suite (in-memory Mongo; no server, no network, no Atlas):
+
+```bash
+pip install -r requirements.txt -r tests/requirements-dev.txt
+python -m pytest tests -q
+```
 
 ---
 
